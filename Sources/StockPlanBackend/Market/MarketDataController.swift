@@ -9,6 +9,7 @@ struct MarketDataController: RouteCollection {
         let market = protected.grouped("market").grouped(ScopeRequirementMiddleware(.marketRead))
         let rateLimited = market.grouped(RateLimitMiddleware(limit: 120, interval: 60, keyPrefix: "ratelimit:market"))
 
+        rateLimited.get("overview", use: overview)
         rateLimited.get("details", use: details)
         rateLimited.get("history", use: stockHistory)
         rateLimited.get("history", "archive", use: archivedStockHistory)
@@ -180,6 +181,11 @@ struct MarketDataController: RouteCollection {
             limit: limit,
             on: req
         )
+    }
+
+    @Sendable
+    func overview(req: Request) async throws -> MarketOverviewResponse {
+        try await req.application.marketDataService.marketOverview(on: req)
     }
 
     @Sendable

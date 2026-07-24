@@ -90,6 +90,30 @@ protocol FMPMarketDataProvider: Sendable {
         to: String?,
         on req: Request
     ) async throws -> [CryptoHistoricalLightPoint]
+    func fetchStockQuotes(symbols: [String], on req: Request) async throws -> [CryptoQuoteResponse]
+    func fetchBiggestGainers(on req: Request) async throws -> [FMPMoverItem]
+    func fetchBiggestLosers(on req: Request) async throws -> [FMPMoverItem]
+    func fetchTopMarketCapUniverse(limit: Int, on req: Request) async throws -> [FMPScreenerItem]
+}
+
+/// Defaults keep pre-existing conformers (test stubs) compiling; the live
+/// provider overrides all of these.
+extension FMPMarketDataProvider {
+    func fetchStockQuotes(symbols _: [String], on _: Request) async throws -> [CryptoQuoteResponse] {
+        throw Abort(.serviceUnavailable, reason: "Batch quotes are not supported by this provider.")
+    }
+
+    func fetchBiggestGainers(on _: Request) async throws -> [FMPMoverItem] {
+        throw Abort(.serviceUnavailable, reason: "Market movers are not supported by this provider.")
+    }
+
+    func fetchBiggestLosers(on _: Request) async throws -> [FMPMoverItem] {
+        throw Abort(.serviceUnavailable, reason: "Market movers are not supported by this provider.")
+    }
+
+    func fetchTopMarketCapUniverse(limit _: Int, on _: Request) async throws -> [FMPScreenerItem] {
+        throw Abort(.serviceUnavailable, reason: "The market screener is not supported by this provider.")
+    }
 }
 
 struct FMPMarketNewsItem: Codable {
@@ -697,6 +721,44 @@ struct LiveFMPMarketDataProvider: FMPMarketDataProvider, CryptoDataProvider {
         return try await fetchJSON(
             path: "/stable/news/stock-latest",
             query: query,
+            on: req
+        )
+    }
+
+    // MARK: - Market overview (indices, movers, screener universe)
+
+    func fetchStockQuotes(symbols: [String], on req: Request) async throws -> [CryptoQuoteResponse] {
+        let joined = symbols
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() }
+            .filter { !$0.isEmpty }
+            .joined(separator: ",")
+        guard !joined.isEmpty else { return [] }
+        return try await fetchJSON(
+            path: "/stable/quote",
+            query: [("symbol", joined)],
+            on: req
+        )
+    }
+
+    func fetchBiggestGainers(on req: Request) async throws -> [FMPMoverItem] {
+        try await fetchJSON(path: "/stable/biggest-gainers", query: [], on: req)
+    }
+
+    func fetchBiggestLosers(on req: Request) async throws -> [FMPMoverItem] {
+        try await fetchJSON(path: "/stable/biggest-losers", query: [], on: req)
+    }
+
+    func fetchTopMarketCapUniverse(limit: Int, on req: Request) async throws -> [FMPScreenerItem] {
+        try await fetchJSON(
+            path: "/stable/company-screener",
+            query: [
+                ("marketCapMoreThan", "10000000000"),
+                ("country", "US"),
+                ("isEtf", "false"),
+                ("isFund", "false"),
+                ("isActivelyTrading", "true"),
+                ("limit", String(limit)),
+            ],
             on: req
         )
     }

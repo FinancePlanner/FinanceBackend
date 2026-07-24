@@ -793,6 +793,191 @@ struct StockPlanBackendTests {
         }
     }
 
+    private func makeOverviewQuote(
+        symbol: String,
+        price: Double,
+        changePct: Double,
+        marketCap: Double? = nil
+    ) -> CryptoQuoteResponse {
+        CryptoQuoteResponse(
+            symbol: symbol,
+            name: symbol,
+            price: price,
+            changePercentage: changePct,
+            change: 0,
+            marketCap: marketCap,
+            timestamp: 0
+        )
+    }
+
+    @Test("Market overview assembles indices, movers, and heatmap on a paid tier")
+    func marketOverviewHappyPath() async throws {
+        try await withApp { app in
+            let state = TestMarketProviderState()
+            let fmpState = TestFMPProviderState()
+            await fmpState.setOverviewQuotes(
+                [
+                    makeOverviewQuote(symbol: "^DJI", price: 40000, changePct: 0.5),
+                    makeOverviewQuote(symbol: "^GSPC", price: 5600, changePct: 0.4),
+                    makeOverviewQuote(symbol: "^IXIC", price: 18000, changePct: -0.2),
+                    makeOverviewQuote(symbol: "^RUT", price: 2200, changePct: 1.1),
+                ],
+                forSymbols: ["^DJI", "^GSPC", "^IXIC", "^RUT"]
+            )
+            await fmpState.setOverviewGainers([
+                FMPMoverItem(symbol: "UPUP", name: "Up Corp", price: 10, change: 2, changesPercentage: 25),
+            ])
+            await fmpState.setOverviewLosers([
+                FMPMoverItem(symbol: "DOWN", name: "Down Corp", price: 5, change: -2, changesPercentage: -28),
+            ])
+            await fmpState.setOverviewScreener([
+                FMPScreenerItem(symbol: "AAPL", companyName: "Apple", marketCap: 3.4e12, sector: "Technology", isEtf: false, isActivelyTrading: true),
+                FMPScreenerItem(symbol: "XOM", companyName: "Exxon", marketCap: 5.0e11, sector: "Energy", isEtf: false, isActivelyTrading: true),
+            ])
+            await fmpState.setOverviewQuotes(
+                [
+                    makeOverviewQuote(symbol: "AAPL", price: 230, changePct: -0.8),
+                    makeOverviewQuote(symbol: "XOM", price: 110, changePct: 1.3),
+                ],
+                forSymbols: ["AAPL", "XOM"]
+            )
+            app.marketDataService = makeTestMarketService(
+                state: state,
+                fmpProvider: TestFMPMarketDataProvider(state: fmpState),
+                fmpAccessTier: .premium
+            )
+            let (token, _) = try await registerTestUser(app: app, identifier: "overviewhappy")
+
+            try await app.testing().test(.GET, "v1/market/overview", beforeRequest: { req in
+                req.headers.bearerAuthorization = .init(token: token)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let body = try res.content.decode(MarketOverviewResponse.self)
+                #expect(body.indices.count == 4)
+                #expect(body.indices.filter(\.isProxy).isEmpty)
+                #expect(body.indices.first?.label == "Dow Jones")
+                #expect(body.gainers.map(\.symbol) == ["UPUP"])
+                #expect(body.losers.map(\.symbol) == ["DOWN"])
+                #expect(body.heatmap.map(\.symbol) == ["AAPL", "XOM"])
+                #expect(body.heatmap.first?.sector == "Technology")
+                #expect(!body.asOf.isEmpty)
+            })
+        }
+    }
+
+    @Test("Market overview serves ETF proxies on the free tier")
+    func marketOverviewFreeTierProxies() async throws {
+        try await withApp { app in
+            let state = TestMarketProviderState()
+            let fmpState = TestFMPProviderState()
+            await fmpState.setOverviewQuotes(
+                [
+                    makeOverviewQuote(symbol: "DIA", price: 400, changePct: 0.5),
+                    makeOverviewQuote(symbol: "SPY", price: 560, changePct: 0.4),
+                    makeOverviewQuote(symbol: "QQQ", price: 480, changePct: -0.2),
+                    makeOverviewQuote(symbol: "IWM", price: 220, changePct: 1.1),
+                ],
+                forSymbols: ["DIA", "SPY", "QQQ", "IWM"]
+            )
+            app.marketDataService = makeTestMarketService(
+                state: state,
+                fmpProvider: TestFMPMarketDataProvider(state: fmpState),
+                fmpAccessTier: .free
+            )
+            let (token, _) = try await registerTestUser(app: app, identifier: "overviewproxy")
+
+            try await app.testing().test(.GET, "v1/market/overview", beforeRequest: { req in
+                req.headers.bearerAuthorization = .init(token: token)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let body = try res.content.decode(MarketOverviewResponse.self)
+                #expect(body.indices.count == 4)
+                #expect(body.indices.filter { !$0.isProxy }.isEmpty)
+                #expect(body.indices.map(\.symbol) == ["DIA", "SPY", "QQQ", "IWM"])
+                #expect(body.indices.map(\.label) == ["Dow Jones", "S&P 500", "Nasdaq", "Russell 2000"])
+            })
+        }
+    }
+
+    @Test("Market overview degrades a failing section to an empty array")
+    func marketOverviewSectionDegrades() async throws {
+        try await withApp { app in
+            let state = TestMarketProviderState()
+            let fmpState = TestFMPProviderState()
+            await fmpState.setOverviewGainersThrows(true)
+            await fmpState.setOverviewLosers([
+                FMPMoverItem(symbol: "DOWN", name: "Down Corp", price: 5, change: -2, changesPercentage: -28),
+            ])
+            app.marketDataService = makeTestMarketService(
+                state: state,
+                fmpProvider: TestFMPMarketDataProvider(state: fmpState),
+                fmpAccessTier: .free
+            )
+            let (token, _) = try await registerTestUser(app: app, identifier: "overviewdegrade")
+
+            try await app.testing().test(.GET, "v1/market/overview", beforeRequest: { req in
+                req.headers.bearerAuthorization = .init(token: token)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let body = try res.content.decode(MarketOverviewResponse.self)
+                #expect(body.gainers.isEmpty)
+                #expect(body.losers.map(\.symbol) == ["DOWN"])
+                #expect(body.indices.isEmpty)
+                #expect(body.heatmap.isEmpty)
+            })
+        }
+    }
+
+    @Test("Market overview errors when every section fails with no stale snapshot")
+    func marketOverviewTotalFailure() async throws {
+        try await withApp { app in
+            let state = TestMarketProviderState()
+            let fmpState = TestFMPProviderState()
+            await fmpState.setOverviewGainersThrows(true)
+            await fmpState.setOverviewLosersThrows(true)
+            await fmpState.setOverviewScreenerThrows(true)
+            app.marketDataService = makeTestMarketService(
+                state: state,
+                fmpProvider: TestFMPMarketDataProvider(state: fmpState),
+                fmpAccessTier: .free
+            )
+            let (token, _) = try await registerTestUser(app: app, identifier: "overviewfail")
+
+            try await app.testing().test(.GET, "v1/market/overview", beforeRequest: { req in
+                req.headers.bearerAuthorization = .init(token: token)
+            }, afterResponse: { res async throws in
+                #expect(res.status.code >= 500)
+            })
+        }
+    }
+
+    @Test("Market overview second request within the TTL hits the cache")
+    func marketOverviewCacheHit() async throws {
+        try await withApp { app in
+            guard app.redis.configuration != nil else { return }
+            let state = TestMarketProviderState()
+            let fmpState = TestFMPProviderState()
+            await fmpState.setOverviewGainers([
+                FMPMoverItem(symbol: "UPUP", name: "Up Corp", price: 10, change: 2, changesPercentage: 25),
+            ])
+            app.marketDataService = makeTestMarketService(
+                state: state,
+                fmpProvider: TestFMPMarketDataProvider(state: fmpState),
+                fmpAccessTier: .free
+            )
+            let (token, _) = try await registerTestUser(app: app, identifier: "overviewcache")
+
+            for _ in 0 ..< 2 {
+                try await app.testing().test(.GET, "v1/market/overview", beforeRequest: { req in
+                    req.headers.bearerAuthorization = .init(token: token)
+                }, afterResponse: { res async throws in
+                    #expect(res.status == .ok)
+                })
+            }
+            #expect(await fmpState.overviewGainersCalls() == 1)
+        }
+    }
+
     @Test("Archived market history endpoints read stored bars and sync provider data into the archive")
     func archivedMarketHistoryEndpoints() async throws {
         try await withApp { app in
@@ -3785,6 +3970,91 @@ struct StockPlanBackendTests {
     }
 
     actor TestFMPProviderState {
+        struct OverviewStubError: Error {}
+
+        private var overviewQuoteBatches: [String: [CryptoQuoteResponse]] = [:]
+        private var overviewQuoteCallCount = 0
+        private var overviewGainersResult: [FMPMoverItem] = []
+        private var overviewGainersShouldThrow = false
+        private var overviewGainersCallCount = 0
+        private var overviewLosersResult: [FMPMoverItem] = []
+        private var overviewLosersShouldThrow = false
+        private var overviewScreenerResult: [FMPScreenerItem] = []
+        private var overviewScreenerShouldThrow = false
+        private var overviewScreenerCallCount = 0
+
+        func setOverviewQuotes(_ quotes: [CryptoQuoteResponse], forSymbols symbols: [String]) {
+            overviewQuoteBatches[Self.overviewKey(symbols)] = quotes
+        }
+
+        func setOverviewGainers(_ movers: [FMPMoverItem]) {
+            overviewGainersResult = movers
+        }
+
+        func setOverviewGainersThrows(_ value: Bool) {
+            overviewGainersShouldThrow = value
+        }
+
+        func setOverviewLosers(_ movers: [FMPMoverItem]) {
+            overviewLosersResult = movers
+        }
+
+        func setOverviewLosersThrows(_ value: Bool) {
+            overviewLosersShouldThrow = value
+        }
+
+        func setOverviewScreener(_ items: [FMPScreenerItem]) {
+            overviewScreenerResult = items
+        }
+
+        func setOverviewScreenerThrows(_ value: Bool) {
+            overviewScreenerShouldThrow = value
+        }
+
+        func overviewQuotes(for symbols: [String]) throws -> [CryptoQuoteResponse] {
+            overviewQuoteCallCount += 1
+            return overviewQuoteBatches[Self.overviewKey(symbols)] ?? []
+        }
+
+        func overviewGainers() throws -> [FMPMoverItem] {
+            overviewGainersCallCount += 1
+            if overviewGainersShouldThrow {
+                throw OverviewStubError()
+            }
+            return overviewGainersResult
+        }
+
+        func overviewLosers() throws -> [FMPMoverItem] {
+            if overviewLosersShouldThrow {
+                throw OverviewStubError()
+            }
+            return overviewLosersResult
+        }
+
+        func overviewScreener() throws -> [FMPScreenerItem] {
+            overviewScreenerCallCount += 1
+            if overviewScreenerShouldThrow {
+                throw OverviewStubError()
+            }
+            return overviewScreenerResult
+        }
+
+        func overviewQuoteCalls() -> Int {
+            overviewQuoteCallCount
+        }
+
+        func overviewGainersCalls() -> Int {
+            overviewGainersCallCount
+        }
+
+        func overviewScreenerCalls() -> Int {
+            overviewScreenerCallCount
+        }
+
+        private static func overviewKey(_ symbols: [String]) -> String {
+            symbols.map { $0.uppercased() }.sorted().joined(separator: ",")
+        }
+
         private var balanceSheetRequests: [FinancialGrowthRequestCapture] = []
         private var cashFlowRequests: [FinancialGrowthRequestCapture] = []
         private var incomeStatementRequests: [FinancialGrowthRequestCapture] = []
@@ -4620,6 +4890,24 @@ struct StockPlanBackendTests {
             on _: Request
         ) async throws -> [CryptoHistoricalLightPoint] {
             []
+        }
+
+        // MARK: Market overview stubs
+
+        func fetchStockQuotes(symbols: [String], on _: Request) async throws -> [CryptoQuoteResponse] {
+            try await state.overviewQuotes(for: symbols)
+        }
+
+        func fetchBiggestGainers(on _: Request) async throws -> [FMPMoverItem] {
+            try await state.overviewGainers()
+        }
+
+        func fetchBiggestLosers(on _: Request) async throws -> [FMPMoverItem] {
+            try await state.overviewLosers()
+        }
+
+        func fetchTopMarketCapUniverse(limit _: Int, on _: Request) async throws -> [FMPScreenerItem] {
+            try await state.overviewScreener()
         }
     }
 

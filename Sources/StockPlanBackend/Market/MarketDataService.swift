@@ -6,6 +6,7 @@ import Vapor
 
 protocol MarketDataService: Sendable {
     var fmpProvider: (any FMPMarketDataProvider)? { get }
+    func marketOverview(on req: Request) async throws -> MarketOverviewResponse
     func quote(symbol: String, on req: Request) async throws -> QuoteResponse
     func quoteBatch(symbols: [String], on req: Request) async throws -> QuoteBatchResponse
     func history(symbol: String, from: String?, to: String?, on req: Request) async throws
