@@ -3930,6 +3930,91 @@ struct StockPlanBackendTests {
     }
 
     actor TestFMPProviderState {
+        struct OverviewStubError: Error {}
+
+        private var overviewQuoteBatches: [String: [CryptoQuoteResponse]] = [:]
+        private var overviewQuoteCallCount = 0
+        private var overviewGainersResult: [FMPMoverItem] = []
+        private var overviewGainersShouldThrow = false
+        private var overviewGainersCallCount = 0
+        private var overviewLosersResult: [FMPMoverItem] = []
+        private var overviewLosersShouldThrow = false
+        private var overviewScreenerResult: [FMPScreenerItem] = []
+        private var overviewScreenerShouldThrow = false
+        private var overviewScreenerCallCount = 0
+
+        func setOverviewQuotes(_ quotes: [CryptoQuoteResponse], forSymbols symbols: [String]) {
+            overviewQuoteBatches[Self.overviewKey(symbols)] = quotes
+        }
+
+        func setOverviewGainers(_ movers: [FMPMoverItem]) {
+            overviewGainersResult = movers
+        }
+
+        func setOverviewGainersThrows(_ value: Bool) {
+            overviewGainersShouldThrow = value
+        }
+
+        func setOverviewLosers(_ movers: [FMPMoverItem]) {
+            overviewLosersResult = movers
+        }
+
+        func setOverviewLosersThrows(_ value: Bool) {
+            overviewLosersShouldThrow = value
+        }
+
+        func setOverviewScreener(_ items: [FMPScreenerItem]) {
+            overviewScreenerResult = items
+        }
+
+        func setOverviewScreenerThrows(_ value: Bool) {
+            overviewScreenerShouldThrow = value
+        }
+
+        func overviewQuotes(for symbols: [String]) throws -> [CryptoQuoteResponse] {
+            overviewQuoteCallCount += 1
+            return overviewQuoteBatches[Self.overviewKey(symbols)] ?? []
+        }
+
+        func overviewGainers() throws -> [FMPMoverItem] {
+            overviewGainersCallCount += 1
+            if overviewGainersShouldThrow {
+                throw OverviewStubError()
+            }
+            return overviewGainersResult
+        }
+
+        func overviewLosers() throws -> [FMPMoverItem] {
+            if overviewLosersShouldThrow {
+                throw OverviewStubError()
+            }
+            return overviewLosersResult
+        }
+
+        func overviewScreener() throws -> [FMPScreenerItem] {
+            overviewScreenerCallCount += 1
+            if overviewScreenerShouldThrow {
+                throw OverviewStubError()
+            }
+            return overviewScreenerResult
+        }
+
+        func overviewQuoteCalls() -> Int {
+            overviewQuoteCallCount
+        }
+
+        func overviewGainersCalls() -> Int {
+            overviewGainersCallCount
+        }
+
+        func overviewScreenerCalls() -> Int {
+            overviewScreenerCallCount
+        }
+
+        private static func overviewKey(_ symbols: [String]) -> String {
+            symbols.map { $0.uppercased() }.sorted().joined(separator: ",")
+        }
+
         private var balanceSheetRequests: [FinancialGrowthRequestCapture] = []
         private var cashFlowRequests: [FinancialGrowthRequestCapture] = []
         private var incomeStatementRequests: [FinancialGrowthRequestCapture] = []
@@ -4765,6 +4850,24 @@ struct StockPlanBackendTests {
             on _: Request
         ) async throws -> [CryptoHistoricalLightPoint] {
             []
+        }
+
+        // MARK: Market overview stubs
+
+        func fetchStockQuotes(symbols: [String], on _: Request) async throws -> [CryptoQuoteResponse] {
+            try await state.overviewQuotes(for: symbols)
+        }
+
+        func fetchBiggestGainers(on _: Request) async throws -> [FMPMoverItem] {
+            try await state.overviewGainers()
+        }
+
+        func fetchBiggestLosers(on _: Request) async throws -> [FMPMoverItem] {
+            try await state.overviewLosers()
+        }
+
+        func fetchTopMarketCapUniverse(limit _: Int, on _: Request) async throws -> [FMPScreenerItem] {
+            try await state.overviewScreener()
         }
     }
 

@@ -2019,6 +2019,27 @@ paths:
           description: Unauthorized
         '503':
           description: Market news provider unavailable or misconfigured
+  /v1/market/overview:
+    get:
+      operationId: getMarketOverview
+      tags: [MarketData]
+      summary: Get the market overview (indices, movers, heatmap)
+      description: Returns major index quotes (ETF proxies on limited data tiers), top gainers and losers, and a market-cap/sector heatmap universe. Sections degrade independently to empty arrays.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MarketOverviewResponse'
+        '401':
+          description: Unauthorized
+        '502':
+          description: Market overview temporarily unavailable
+        '503':
+          description: Market data provider unavailable or misconfigured
   /v1/market/news/general:
     get:
       operationId: getGeneralMarketNews
@@ -11378,6 +11399,75 @@ components:
           type: integer
           format: int64
       required: [date, open, high, low, close, volume]
+    MarketOverviewResponse:
+      type: object
+      required: [indices, gainers, losers, heatmap, asOf]
+      properties:
+        indices:
+          type: array
+          items:
+            $ref: '#/components/schemas/MarketIndexQuote'
+        gainers:
+          type: array
+          items:
+            $ref: '#/components/schemas/MarketMover'
+        losers:
+          type: array
+          items:
+            $ref: '#/components/schemas/MarketMover'
+        heatmap:
+          type: array
+          items:
+            $ref: '#/components/schemas/MarketHeatmapTile'
+        asOf:
+          type: string
+    MarketIndexQuote:
+      type: object
+      required: [symbol, label, price, changePct, isProxy]
+      properties:
+        symbol:
+          type: string
+        label:
+          type: string
+        price:
+          type: number
+          format: double
+        changePct:
+          type: number
+          format: double
+        isProxy:
+          type: boolean
+          description: True when the quote is an ETF proxy for the index.
+    MarketMover:
+      type: object
+      required: [symbol, name, price, changePct]
+      properties:
+        symbol:
+          type: string
+        name:
+          type: string
+        price:
+          type: number
+          format: double
+        changePct:
+          type: number
+          format: double
+    MarketHeatmapTile:
+      type: object
+      required: [symbol, name, sector, marketCap, changePct]
+      properties:
+        symbol:
+          type: string
+        name:
+          type: string
+        sector:
+          type: string
+        marketCap:
+          type: number
+          format: double
+        changePct:
+          type: number
+          format: double
     StockNews:
       type: object
       properties:
