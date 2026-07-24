@@ -793,188 +793,148 @@ struct StockPlanBackendTests {
         }
     }
 
-    private func makeOverviewQuote(
-        symbol: String,
-        price: Double,
-        changePct: Double,
-        marketCap: Double? = nil
-    ) -> CryptoQuoteResponse {
-        CryptoQuoteResponse(
-            symbol: symbol,
-            name: symbol,
-            price: price,
-            changePercentage: changePct,
-            change: 0,
-            marketCap: marketCap,
-            timestamp: 0
-        )
+    private struct ThrowingNewsProvider: NewsProvider {
+        struct ProviderDown: Error {}
+        let name: String = "test-news-down"
+
+        func fetch(symbols _: [String], on _: Request) async throws -> [ProviderNewsItem] {
+            throw ProviderDown()
+        }
+
+        func fetchGeneral(on _: Request) async throws -> [ProviderNewsItem] {
+            throw ProviderDown()
+        }
     }
 
-    @Test("Market overview assembles indices, movers, and heatmap on a paid tier")
-    func marketOverviewHappyPath() async throws {
-        try await withApp { app in
-            let state = TestMarketProviderState()
-            let fmpState = TestFMPProviderState()
-            await fmpState.setOverviewQuotes(
-                [
-                    makeOverviewQuote(symbol: "^DJI", price: 40000, changePct: 0.5),
-                    makeOverviewQuote(symbol: "^GSPC", price: 5600, changePct: 0.4),
-                    makeOverviewQuote(symbol: "^IXIC", price: 18000, changePct: -0.2),
-                    makeOverviewQuote(symbol: "^RUT", price: 2200, changePct: 1.1),
-                ],
-                forSymbols: ["^DJI", "^GSPC", "^IXIC", "^RUT"]
-            )
-            await fmpState.setOverviewGainers([
-                FMPMoverItem(symbol: "UPUP", name: "Up Corp", price: 10, change: 2, changesPercentage: 25),
-            ])
-            await fmpState.setOverviewLosers([
-                FMPMoverItem(symbol: "DOWN", name: "Down Corp", price: 5, change: -2, changesPercentage: -28),
-            ])
-            await fmpState.setOverviewScreener([
-                FMPScreenerItem(symbol: "AAPL", companyName: "Apple", marketCap: 3.4e12, sector: "Technology", isEtf: false, isActivelyTrading: true),
-                FMPScreenerItem(symbol: "XOM", companyName: "Exxon", marketCap: 5.0e11, sector: "Energy", isEtf: false, isActivelyTrading: true),
-            ])
-            await fmpState.setOverviewQuotes(
-                [
-                    makeOverviewQuote(symbol: "AAPL", price: 230, changePct: -0.8),
-                    makeOverviewQuote(symbol: "XOM", price: 110, changePct: 1.3),
-                ],
-                forSymbols: ["AAPL", "XOM"]
-            )
-            app.marketDataService = makeTestMarketService(
-                state: state,
-                fmpProvider: TestFMPMarketDataProvider(state: fmpState),
-                fmpAccessTier: .premium
-            )
-            let (token, _) = try await registerTestUser(app: app, identifier: "overviewhappy")
+    private func saveGeneralArchiveRow(
+        headline: String,
+        url: String,
+        fetchedAt: Date,
+        on app: Application
+    ) async throws {
+        try await MarketNewsArchive(
+            provider: "test-news",
+            symbol: "GENERAL",
+            headline: headline,
+            source: "Example Wire",
+            url: url,
+            summary: nil,
+            imageURL: nil,
+            publishedAt: fetchedAt,
+            fetchedAt: fetchedAt
+        ).save(on: app.db)
+    }
 
-            try await app.testing().test(.GET, "v1/market/overview", beforeRequest: { req in
+    @Test("General market news serves a fresh archive without calling the provider")
+    func generalMarketNewsFreshArchive() async throws {
+        try await withApp { app in
+            let state = TestNewsProviderState(batches: [[
+                ProviderNewsItem(
+                    symbol: "GENERAL",
+                    headline: "Should not appear",
+                    source: nil,
+                    url: "https://example.com/should-not-appear",
+                    summary: nil,
+                    image: nil,
+                    publishedAt: Date()
+                ),
+            ]])
+            app.marketNewsArchiveService = makeTestMarketNewsArchiveService(state: state)
+            let (token, _) = try await registerTestUser(app: app, identifier: "generalnewsfresh")
+
+            try await saveGeneralArchiveRow(
+                headline: "Markets steady ahead of CPI print",
+                url: "https://example.com/cpi",
+                fetchedAt: Date(),
+                on: app
+            )
+
+            try await app.testing().test(.GET, "v1/market/news/general", beforeRequest: { req in
                 req.headers.bearerAuthorization = .init(token: token)
             }, afterResponse: { res async throws in
                 #expect(res.status == .ok)
-                let body = try res.content.decode(MarketOverviewResponse.self)
-                #expect(body.indices.count == 4)
-                #expect(body.indices.filter(\.isProxy).isEmpty)
-                #expect(body.indices.first?.label == "Dow Jones")
-                #expect(body.gainers.map(\.symbol) == ["UPUP"])
-                #expect(body.losers.map(\.symbol) == ["DOWN"])
-                #expect(body.heatmap.map(\.symbol) == ["AAPL", "XOM"])
-                #expect(body.heatmap.first?.sector == "Technology")
-                #expect(!body.asOf.isEmpty)
+                let body = try res.content.decode([StockNews].self)
+                #expect(body.map(\.title) == ["Markets steady ahead of CPI print"])
+            })
+            #expect(await state.fetchCalls() == 0)
+        }
+    }
+
+    @Test("General market news refreshes a stale archive from the provider")
+    func generalMarketNewsStaleArchiveRefreshes() async throws {
+        try await withApp { app in
+            let state = TestNewsProviderState(batches: [[
+                ProviderNewsItem(
+                    symbol: "GENERAL",
+                    headline: "Fed signals patience",
+                    source: "Example Wire",
+                    url: "https://example.com/fed-patience",
+                    summary: nil,
+                    image: nil,
+                    publishedAt: Date()
+                ),
+            ]])
+            app.marketNewsArchiveService = makeTestMarketNewsArchiveService(state: state)
+            let (token, _) = try await registerTestUser(app: app, identifier: "generalnewsstale")
+
+            try await saveGeneralArchiveRow(
+                headline: "Old headline",
+                url: "https://example.com/old",
+                fetchedAt: Date().addingTimeInterval(-3600),
+                on: app
+            )
+
+            try await app.testing().test(.GET, "v1/market/news/general", beforeRequest: { req in
+                req.headers.bearerAuthorization = .init(token: token)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let body = try res.content.decode([StockNews].self)
+                #expect(body.map(\.title).contains("Fed signals patience"))
+            })
+            #expect(await state.fetchCalls() == 1)
+        }
+    }
+
+    @Test("General market news falls back to a stale archive when the provider fails")
+    func generalMarketNewsStaleFallbackOnProviderFailure() async throws {
+        try await withApp { app in
+            app.marketNewsArchiveService = DefaultMarketNewsArchiveService(
+                provider: ThrowingNewsProvider(),
+                config: .init(ttlSeconds: 900, defaultLimit: 50, maxLimit: 200)
+            )
+            let (token, _) = try await registerTestUser(app: app, identifier: "generalnewsfallback")
+
+            try await saveGeneralArchiveRow(
+                headline: "Yesterday's market wrap",
+                url: "https://example.com/wrap",
+                fetchedAt: Date().addingTimeInterval(-7200),
+                on: app
+            )
+
+            try await app.testing().test(.GET, "v1/market/news/general", beforeRequest: { req in
+                req.headers.bearerAuthorization = .init(token: token)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let body = try res.content.decode([StockNews].self)
+                #expect(body.map(\.title) == ["Yesterday's market wrap"])
             })
         }
     }
 
-    @Test("Market overview serves ETF proxies on the free tier")
-    func marketOverviewFreeTierProxies() async throws {
+    @Test("General market news surfaces an error when the provider fails and the archive is empty")
+    func generalMarketNewsErrorWhenEmptyAndProviderDown() async throws {
         try await withApp { app in
-            let state = TestMarketProviderState()
-            let fmpState = TestFMPProviderState()
-            await fmpState.setOverviewQuotes(
-                [
-                    makeOverviewQuote(symbol: "DIA", price: 400, changePct: 0.5),
-                    makeOverviewQuote(symbol: "SPY", price: 560, changePct: 0.4),
-                    makeOverviewQuote(symbol: "QQQ", price: 480, changePct: -0.2),
-                    makeOverviewQuote(symbol: "IWM", price: 220, changePct: 1.1),
-                ],
-                forSymbols: ["DIA", "SPY", "QQQ", "IWM"]
+            app.marketNewsArchiveService = DefaultMarketNewsArchiveService(
+                provider: ThrowingNewsProvider(),
+                config: .init(ttlSeconds: 900, defaultLimit: 50, maxLimit: 200)
             )
-            app.marketDataService = makeTestMarketService(
-                state: state,
-                fmpProvider: TestFMPMarketDataProvider(state: fmpState),
-                fmpAccessTier: .free
-            )
-            let (token, _) = try await registerTestUser(app: app, identifier: "overviewproxy")
+            let (token, _) = try await registerTestUser(app: app, identifier: "generalnewsempty")
 
-            try await app.testing().test(.GET, "v1/market/overview", beforeRequest: { req in
-                req.headers.bearerAuthorization = .init(token: token)
-            }, afterResponse: { res async throws in
-                #expect(res.status == .ok)
-                let body = try res.content.decode(MarketOverviewResponse.self)
-                #expect(body.indices.count == 4)
-                #expect(body.indices.filter { !$0.isProxy }.isEmpty)
-                #expect(body.indices.map(\.symbol) == ["DIA", "SPY", "QQQ", "IWM"])
-                #expect(body.indices.map(\.label) == ["Dow Jones", "S&P 500", "Nasdaq", "Russell 2000"])
-            })
-        }
-    }
-
-    @Test("Market overview degrades a failing section to an empty array")
-    func marketOverviewSectionDegrades() async throws {
-        try await withApp { app in
-            let state = TestMarketProviderState()
-            let fmpState = TestFMPProviderState()
-            await fmpState.setOverviewGainersThrows(true)
-            await fmpState.setOverviewLosers([
-                FMPMoverItem(symbol: "DOWN", name: "Down Corp", price: 5, change: -2, changesPercentage: -28),
-            ])
-            app.marketDataService = makeTestMarketService(
-                state: state,
-                fmpProvider: TestFMPMarketDataProvider(state: fmpState),
-                fmpAccessTier: .free
-            )
-            let (token, _) = try await registerTestUser(app: app, identifier: "overviewdegrade")
-
-            try await app.testing().test(.GET, "v1/market/overview", beforeRequest: { req in
-                req.headers.bearerAuthorization = .init(token: token)
-            }, afterResponse: { res async throws in
-                #expect(res.status == .ok)
-                let body = try res.content.decode(MarketOverviewResponse.self)
-                #expect(body.gainers.isEmpty)
-                #expect(body.losers.map(\.symbol) == ["DOWN"])
-                #expect(body.indices.isEmpty)
-                #expect(body.heatmap.isEmpty)
-            })
-        }
-    }
-
-    @Test("Market overview errors when every section fails with no stale snapshot")
-    func marketOverviewTotalFailure() async throws {
-        try await withApp { app in
-            let state = TestMarketProviderState()
-            let fmpState = TestFMPProviderState()
-            await fmpState.setOverviewGainersThrows(true)
-            await fmpState.setOverviewLosersThrows(true)
-            await fmpState.setOverviewScreenerThrows(true)
-            app.marketDataService = makeTestMarketService(
-                state: state,
-                fmpProvider: TestFMPMarketDataProvider(state: fmpState),
-                fmpAccessTier: .free
-            )
-            let (token, _) = try await registerTestUser(app: app, identifier: "overviewfail")
-
-            try await app.testing().test(.GET, "v1/market/overview", beforeRequest: { req in
+            try await app.testing().test(.GET, "v1/market/news/general", beforeRequest: { req in
                 req.headers.bearerAuthorization = .init(token: token)
             }, afterResponse: { res async throws in
                 #expect(res.status.code >= 500)
             })
-        }
-    }
-
-    @Test("Market overview second request within the TTL hits the cache")
-    func marketOverviewCacheHit() async throws {
-        try await withApp { app in
-            guard app.redis.configuration != nil else { return }
-            let state = TestMarketProviderState()
-            let fmpState = TestFMPProviderState()
-            await fmpState.setOverviewGainers([
-                FMPMoverItem(symbol: "UPUP", name: "Up Corp", price: 10, change: 2, changesPercentage: 25),
-            ])
-            app.marketDataService = makeTestMarketService(
-                state: state,
-                fmpProvider: TestFMPMarketDataProvider(state: fmpState),
-                fmpAccessTier: .free
-            )
-            let (token, _) = try await registerTestUser(app: app, identifier: "overviewcache")
-
-            for _ in 0 ..< 2 {
-                try await app.testing().test(.GET, "v1/market/overview", beforeRequest: { req in
-                    req.headers.bearerAuthorization = .init(token: token)
-                }, afterResponse: { res async throws in
-                    #expect(res.status == .ok)
-                })
-            }
-            #expect(await fmpState.overviewGainersCalls() == 1)
         }
     }
 
