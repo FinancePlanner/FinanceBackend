@@ -793,6 +793,151 @@ struct StockPlanBackendTests {
         }
     }
 
+    private struct ThrowingNewsProvider: NewsProvider {
+        struct ProviderDown: Error {}
+        let name: String = "test-news-down"
+
+        func fetch(symbols _: [String], on _: Request) async throws -> [ProviderNewsItem] {
+            throw ProviderDown()
+        }
+
+        func fetchGeneral(on _: Request) async throws -> [ProviderNewsItem] {
+            throw ProviderDown()
+        }
+    }
+
+    private func saveGeneralArchiveRow(
+        headline: String,
+        url: String,
+        fetchedAt: Date,
+        on app: Application
+    ) async throws {
+        try await MarketNewsArchive(
+            provider: "test-news",
+            symbol: "GENERAL",
+            headline: headline,
+            source: "Example Wire",
+            url: url,
+            summary: nil,
+            imageURL: nil,
+            publishedAt: fetchedAt,
+            fetchedAt: fetchedAt
+        ).save(on: app.db)
+    }
+
+    @Test("General market news serves a fresh archive without calling the provider")
+    func generalMarketNewsFreshArchive() async throws {
+        try await withApp { app in
+            let state = TestNewsProviderState(batches: [[
+                ProviderNewsItem(
+                    symbol: "GENERAL",
+                    headline: "Should not appear",
+                    source: nil,
+                    url: "https://example.com/should-not-appear",
+                    summary: nil,
+                    image: nil,
+                    publishedAt: Date()
+                ),
+            ]])
+            app.marketNewsArchiveService = makeTestMarketNewsArchiveService(state: state)
+            let (token, _) = try await registerTestUser(app: app, identifier: "generalnewsfresh")
+
+            try await saveGeneralArchiveRow(
+                headline: "Markets steady ahead of CPI print",
+                url: "https://example.com/cpi",
+                fetchedAt: Date(),
+                on: app
+            )
+
+            try await app.testing().test(.GET, "v1/market/news/general", beforeRequest: { req in
+                req.headers.bearerAuthorization = .init(token: token)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let body = try res.content.decode([StockNews].self)
+                #expect(body.map(\.title) == ["Markets steady ahead of CPI print"])
+            })
+            #expect(await state.fetchCalls() == 0)
+        }
+    }
+
+    @Test("General market news refreshes a stale archive from the provider")
+    func generalMarketNewsStaleArchiveRefreshes() async throws {
+        try await withApp { app in
+            let state = TestNewsProviderState(batches: [[
+                ProviderNewsItem(
+                    symbol: "GENERAL",
+                    headline: "Fed signals patience",
+                    source: "Example Wire",
+                    url: "https://example.com/fed-patience",
+                    summary: nil,
+                    image: nil,
+                    publishedAt: Date()
+                ),
+            ]])
+            app.marketNewsArchiveService = makeTestMarketNewsArchiveService(state: state)
+            let (token, _) = try await registerTestUser(app: app, identifier: "generalnewsstale")
+
+            try await saveGeneralArchiveRow(
+                headline: "Old headline",
+                url: "https://example.com/old",
+                fetchedAt: Date().addingTimeInterval(-3600),
+                on: app
+            )
+
+            try await app.testing().test(.GET, "v1/market/news/general", beforeRequest: { req in
+                req.headers.bearerAuthorization = .init(token: token)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let body = try res.content.decode([StockNews].self)
+                #expect(body.map(\.title).contains("Fed signals patience"))
+            })
+            #expect(await state.fetchCalls() == 1)
+        }
+    }
+
+    @Test("General market news falls back to a stale archive when the provider fails")
+    func generalMarketNewsStaleFallbackOnProviderFailure() async throws {
+        try await withApp { app in
+            app.marketNewsArchiveService = DefaultMarketNewsArchiveService(
+                provider: ThrowingNewsProvider(),
+                config: .init(ttlSeconds: 900, defaultLimit: 50, maxLimit: 200)
+            )
+            let (token, _) = try await registerTestUser(app: app, identifier: "generalnewsfallback")
+
+            try await saveGeneralArchiveRow(
+                headline: "Yesterday's market wrap",
+                url: "https://example.com/wrap",
+                fetchedAt: Date().addingTimeInterval(-7200),
+                on: app
+            )
+
+            try await app.testing().test(.GET, "v1/market/news/general", beforeRequest: { req in
+                req.headers.bearerAuthorization = .init(token: token)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let body = try res.content.decode([StockNews].self)
+                #expect(body.map(\.title) == ["Yesterday's market wrap"])
+            })
+        }
+    }
+
+    @Test("General market news surfaces an error when the provider fails and the archive is empty")
+    func generalMarketNewsErrorWhenEmptyAndProviderDown() async throws {
+        try await withApp { app in
+            app.marketNewsArchiveService = DefaultMarketNewsArchiveService(
+                provider: ThrowingNewsProvider(),
+                config: .init(ttlSeconds: 900, defaultLimit: 50, maxLimit: 200)
+            )
+            let (token, _) = try await registerTestUser(app: app, identifier: "generalnewsempty")
+
+            try await app.testing().test(.GET, "v1/market/news/general", beforeRequest: { req in
+                req.headers.bearerAuthorization = .init(token: token)
+            }, afterResponse: { res async throws in
+                #expect(res.status.code >= 500)
+            })
+        }
+    }
+
     @Test("Archived market history endpoints read stored bars and sync provider data into the archive")
     func archivedMarketHistoryEndpoints() async throws {
         try await withApp { app in
