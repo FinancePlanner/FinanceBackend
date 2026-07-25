@@ -426,4 +426,48 @@ struct InsightsServiceTests {
         })
         return try #require(token)
     }
+
+    @Test("Insert paths dedupe within a single batch, not just against stored rows")
+    func insertsDedupeWithinBatch() async throws {
+        try await withApp { app in
+            let repo = DatabaseInsightsRepository()
+
+            func makeEvent(_ key: String) -> InsightEvent {
+                InsightEvent(
+                    dedupeKey: key,
+                    source: "test",
+                    topic: "Stocks",
+                    title: "t",
+                    summary: nil,
+                    sentimentLabel: "neutral",
+                    sentimentScore: nil,
+                    sourceURL: nil,
+                    author: nil,
+                    observedAt: Date(),
+                    rawPayload: nil
+                )
+            }
+
+            // Hermes can emit the same dedupe key twice in one payload; before
+            // the batch-level guard both rows counted as "fresh" and the second
+            // save violated the unique index, failing the whole sync.
+            let inserted = try await repo.insertNewEvents(
+                [makeEvent("dup-1"), makeEvent("dup-1"), makeEvent("unique-1")],
+                on: app.db
+            )
+            #expect(inserted == 2)
+
+            // A second run inserts nothing: both keys are now stored.
+            let again = try await repo.insertNewEvents(
+                [makeEvent("dup-1"), makeEvent("unique-1")],
+                on: app.db
+            )
+            #expect(again == 0)
+
+            let stored = try await InsightEvent.query(on: app.db)
+                .filter(\.$dedupeKey ~~ ["dup-1", "unique-1"])
+                .count()
+            #expect(stored == 2)
+        }
+    }
 }

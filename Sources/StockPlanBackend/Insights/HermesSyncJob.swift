@@ -57,7 +57,9 @@ final class HermesSyncJob: LifecycleHandler, @unchecked Sendable {
                 "hermes_sync ok events=\(summary.eventsInserted) snapshots=\(summary.snapshotsUpserted) ticker_posts=\(summary.tickerPostsInserted) net_worth=\(summary.netWorthInserted)"
             )
         } catch {
-            app.logger.warning("hermes_sync failed error=\(String(describing: error))")
+            // String(reflecting:) — PSQLError's description is deliberately
+            // opaque, which cost a full debugging cycle here.
+            app.logger.warning("hermes_sync failed error=\(String(reflecting: error))")
         }
     }
 }
