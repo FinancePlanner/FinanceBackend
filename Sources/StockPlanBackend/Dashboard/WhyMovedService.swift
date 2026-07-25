@@ -60,6 +60,7 @@ struct DefaultWhyMovedService: WhyMovedService {
         }
         movers.sort { abs($0.contribution ?? 0) > abs($1.contribution ?? 0) }
 
+        let sentimentSource = await loadSentimentSource(movers: movers, on: req)
         let context = await loadContext(on: req)
         let aiSummary = await loadAISummary(
             userId: userId,
@@ -75,7 +76,33 @@ struct DefaultWhyMovedService: WhyMovedService {
             portfolioChangeValue: movers.isEmpty ? nil : dailyChange,
             movers: movers,
             context: context,
-            aiSummary: aiSummary
+            aiSummary: aiSummary,
+            sentimentSource: sentimentSource
+        )
+    }
+
+    /// Aggregates what the X-sentiment actually covers for this portfolio.
+    /// Returns nil when no mover carried sentiment so the clients can hide
+    /// the claim entirely rather than showing an empty one.
+    private func loadSentimentSource(
+        movers: [WhyMovedMover],
+        on req: Request
+    ) async -> WhyMovedSentimentSource? {
+        let covered = movers.compactMap(\.sentiment)
+        guard !covered.isEmpty else { return nil }
+
+        let symbols = movers.filter { $0.sentiment != nil }.map(\.symbol)
+        let lastPostAt = try? await TickerSentimentPost.query(on: req.db)
+            .filter(\.$symbol ~~ symbols)
+            .sort(\.$postedAt, .descending)
+            .first()?
+            .postedAt
+
+        return WhyMovedSentimentSource(
+            postsAnalyzed: covered.reduce(0) { $0 + $1.postCount },
+            symbolsCovered: covered.count,
+            windowDays: Self.sentimentDays,
+            lastPostAt: lastPostAt.map { ISO8601DateFormatter().string(from: $0) } ?? nil
         )
     }
 

@@ -213,6 +213,10 @@ struct WhyMovedTests {
                 #expect(body.movers.contains { $0.symbol == "XOM" })
                 #expect(!body.movers.contains { $0.symbol == "FLAT" })
                 #expect(body.context.topics.first?.topic == "Stocks")
+                // Provenance must reflect only what sentiment actually covered.
+                #expect(body.sentimentSource?.postsAnalyzed == 12)
+                #expect(body.sentimentSource?.symbolsCovered == 1)
+                #expect(body.sentimentSource?.windowDays == 7)
                 #expect(body.aiSummary?.text.contains("AAPL") == true)
                 #expect(body.portfolioChangePercent != nil)
             })
@@ -232,6 +236,9 @@ struct WhyMovedTests {
                 let body = try res.content.decode(WhyMovedResponse.self)
                 #expect(body.movers.count == 1)
                 #expect(body.movers.first?.sentiment == nil)
+                // No sentiment at all -> no provenance, so the UI can hide
+                // the claim rather than showing "0 posts analyzed".
+                #expect(body.sentimentSource == nil)
             })
         }
     }
