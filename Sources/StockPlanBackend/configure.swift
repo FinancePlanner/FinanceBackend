@@ -158,6 +158,7 @@ public func configure(_ app: Application) async throws {
         repo: app.dashboardRepository,
         statisticsRepo: app.statisticsRepository
     )
+    app.whyMovedService = DefaultWhyMovedService(statisticsRepo: app.statisticsRepository)
     app.userProfileRepository = DatabaseUserProfileRepository(encryptionService: app.userPIIEncryptionService)
     app.userProfileService = DefaultUserProfileService(repo: app.userProfileRepository)
     app.pushDeviceService = DatabasePushDeviceService()

@@ -6,12 +6,19 @@ struct DashboardController: RouteCollection {
         let protected = routes.grouped(SessionToken.authenticator(), SessionToken.guardMiddleware())
         protected.get("dashboard", use: dashboard)
         protected.get("dashboard", "insights", use: insights)
+        protected.get("dashboard", "why-moved", use: whyMoved)
     }
 
     @Sendable
     func dashboard(req: Request) async throws -> DashboardResponse {
         let session = try req.auth.require(SessionToken.self)
         return try await req.application.dashboardService.dashboard(userId: session.userId, req: req, on: req.db)
+    }
+
+    @Sendable
+    func whyMoved(req: Request) async throws -> WhyMovedResponse {
+        let session = try req.auth.require(SessionToken.self)
+        return try await req.application.whyMovedService.whyMoved(userId: session.userId, on: req)
     }
 
     @Sendable
