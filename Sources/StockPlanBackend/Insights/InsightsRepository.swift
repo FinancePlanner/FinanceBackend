@@ -24,7 +24,10 @@ struct DatabaseInsightsRepository: InsightsRepository {
             .all()
             .map(\.dedupeKey)
         let existingSet = Set(existing)
-        let fresh = events.filter { !existingSet.contains($0.dedupeKey) }
+        var batchSeen = Set<String>()
+        let fresh = events.filter {
+            !existingSet.contains($0.dedupeKey) && batchSeen.insert($0.dedupeKey).inserted
+        }
         for event in fresh {
             try await event.save(on: db)
         }
@@ -39,7 +42,10 @@ struct DatabaseInsightsRepository: InsightsRepository {
             .all()
             .map(\.dedupeKey)
         let existingSet = Set(existing)
-        let fresh = posts.filter { !existingSet.contains($0.dedupeKey) }
+        var batchSeen = Set<String>()
+        let fresh = posts.filter {
+            !existingSet.contains($0.dedupeKey) && batchSeen.insert($0.dedupeKey).inserted
+        }
         for post in fresh {
             try await post.save(on: db)
         }
@@ -54,7 +60,10 @@ struct DatabaseInsightsRepository: InsightsRepository {
             .all()
             .map(\.dedupeKey)
         let existingSet = Set(existing)
-        let fresh = snapshots.filter { !existingSet.contains($0.dedupeKey) }
+        var batchSeen = Set<String>()
+        let fresh = snapshots.filter {
+            !existingSet.contains($0.dedupeKey) && batchSeen.insert($0.dedupeKey).inserted
+        }
         for snapshot in fresh {
             try await snapshot.save(on: db)
         }
