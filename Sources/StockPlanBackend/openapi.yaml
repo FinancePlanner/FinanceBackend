@@ -4959,6 +4959,23 @@ paths:
         '401':
           description: Unauthorized
 
+  /v1/dashboard/why-moved:
+    get:
+      operationId: getDashboardWhyMoved
+      tags: [Dashboard]
+      summary: Why your portfolio moved today
+      description: Top-moving holdings joined with Hermes X-sentiment aggregates, market context (indices, insight topics), and an optional cached AI one-sentence summary. Sections degrade independently; always 200 for an authenticated user.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WhyMovedResponse'
+        '401':
+          description: Unauthorized
   /v1/dashboard/insights:
     get:
       operationId: dashboardInsights
@@ -11508,6 +11525,93 @@ components:
         relativeVolume:
           type: number
           format: double
+    WhyMovedResponse:
+      type: object
+      required: [asOf, movers, context]
+      properties:
+        asOf:
+          type: string
+        portfolioChangePercent:
+          type: number
+          format: double
+        portfolioChangeValue:
+          type: number
+          format: double
+        movers:
+          type: array
+          items:
+            $ref: '#/components/schemas/WhyMovedMover'
+        context:
+          $ref: '#/components/schemas/WhyMovedContext'
+        aiSummary:
+          $ref: '#/components/schemas/WhyMovedAISummary'
+    WhyMovedMover:
+      type: object
+      required: [symbol, changePercent]
+      properties:
+        symbol:
+          type: string
+        changePercent:
+          type: number
+          format: double
+        contribution:
+          type: number
+          format: double
+        weightPercent:
+          type: number
+          format: double
+        sentiment:
+          $ref: '#/components/schemas/WhyMovedSentiment'
+    WhyMovedSentiment:
+      type: object
+      required: [label, postCount]
+      properties:
+        label:
+          type: string
+        score:
+          type: number
+          format: double
+        postCount:
+          type: integer
+    WhyMovedContext:
+      type: object
+      required: [indices, topics]
+      properties:
+        indices:
+          type: array
+          items:
+            $ref: '#/components/schemas/WhyMovedIndex'
+        topics:
+          type: array
+          items:
+            $ref: '#/components/schemas/WhyMovedTopic'
+    WhyMovedIndex:
+      type: object
+      required: [symbol, label, changePercent]
+      properties:
+        symbol:
+          type: string
+        label:
+          type: string
+        changePercent:
+          type: number
+          format: double
+    WhyMovedTopic:
+      type: object
+      required: [topic, count]
+      properties:
+        topic:
+          type: string
+        count:
+          type: integer
+    WhyMovedAISummary:
+      type: object
+      required: [text, generatedAt]
+      properties:
+        text:
+          type: string
+        generatedAt:
+          type: string
     MarketOverviewResponse:
       type: object
       required: [indices, gainers, losers, heatmap, asOf]

@@ -37,4 +37,17 @@ enum AIPrompt {
         }
         return "\(instruction)\nSERVER-SELECTED FACTS:\n\(factsJSON)"
     }
+
+    /// One-sentence "why your portfolio moved" summary for the dashboard
+    /// hero. Deliberately NOT an AIInsightKind: the shared enum is
+    /// exhaustively switched and adding a case would force a package bump.
+    static func whyMovedUserPrompt(factsJSON: String) -> String {
+        """
+        Write ONE sentence (max 25 words) explaining why this portfolio moved \
+        today, citing the biggest contributor and, when present, its social \
+        sentiment or a market index. Respond as JSON: {"text": "..."}.
+        SERVER-SELECTED FACTS:
+        \(factsJSON)
+        """
+    }
 }
