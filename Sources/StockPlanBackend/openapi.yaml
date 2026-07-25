@@ -11545,6 +11545,21 @@ components:
           $ref: '#/components/schemas/WhyMovedContext'
         aiSummary:
           $ref: '#/components/schemas/WhyMovedAISummary'
+        sentimentSource:
+          $ref: '#/components/schemas/WhyMovedSentimentSource'
+    WhyMovedSentimentSource:
+      type: object
+      required: [postsAnalyzed, symbolsCovered, windowDays]
+      properties:
+        postsAnalyzed:
+          type: integer
+        symbolsCovered:
+          type: integer
+        windowDays:
+          type: integer
+        lastPostAt:
+          type: string
+          description: Timestamp of the most recent analyzed post.
     WhyMovedMover:
       type: object
       required: [symbol, changePercent]

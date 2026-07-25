@@ -12,6 +12,19 @@ struct WhyMovedResponse: Content, Equatable {
     let movers: [WhyMovedMover]
     let context: WhyMovedContext
     let aiSummary: WhyMovedAISummary?
+    /// Provenance for the X-sentiment shown against the movers. Nil when the
+    /// pipeline returned nothing, so clients never imply coverage they do
+    /// not have.
+    let sentimentSource: WhyMovedSentimentSource?
+}
+
+struct WhyMovedSentimentSource: Content, Equatable {
+    let postsAnalyzed: Int
+    let symbolsCovered: Int
+    let windowDays: Int
+    /// Timestamp of the most recent analyzed post, so the UI can show real
+    /// recency instead of implying live data.
+    let lastPostAt: String?
 }
 
 struct WhyMovedMover: Content, Equatable {
