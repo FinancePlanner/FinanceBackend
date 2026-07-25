@@ -94,6 +94,7 @@ protocol FMPMarketDataProvider: Sendable {
     func fetchBiggestGainers(on req: Request) async throws -> [FMPMoverItem]
     func fetchBiggestLosers(on req: Request) async throws -> [FMPMoverItem]
     func fetchTopMarketCapUniverse(limit: Int, on req: Request) async throws -> [FMPScreenerItem]
+    func fetchInsiderTrades(symbol: String, limit: Int, on req: Request) async throws -> [FMPInsiderTrade]
 }
 
 /// Defaults keep pre-existing conformers (test stubs) compiling; the live
@@ -113,6 +114,10 @@ extension FMPMarketDataProvider {
 
     func fetchTopMarketCapUniverse(limit _: Int, on _: Request) async throws -> [FMPScreenerItem] {
         throw Abort(.serviceUnavailable, reason: "The market screener is not supported by this provider.")
+    }
+
+    func fetchInsiderTrades(symbol _: String, limit _: Int, on _: Request) async throws -> [FMPInsiderTrade] {
+        throw Abort(.serviceUnavailable, reason: "Insider trades are not supported by this provider.")
     }
 }
 
@@ -759,6 +764,15 @@ struct LiveFMPMarketDataProvider: FMPMarketDataProvider, CryptoDataProvider {
                 ("isActivelyTrading", "true"),
                 ("limit", String(limit)),
             ],
+            on: req
+        )
+    }
+
+    func fetchInsiderTrades(symbol: String, limit: Int, on req: Request) async throws -> [FMPInsiderTrade] {
+        let symbol = try normalizeSymbol(symbol)
+        return try await fetchJSON(
+            path: "/stable/insider-trading/search",
+            query: [("symbol", symbol), ("page", "0"), ("limit", String(limit))],
             on: req
         )
     }

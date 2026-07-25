@@ -938,6 +938,146 @@ struct StockPlanBackendTests {
         }
     }
 
+    private func makeOverviewQuote(
+        symbol: String,
+        price: Double,
+        changePct: Double,
+        marketCap: Double? = nil
+    ) -> CryptoQuoteResponse {
+        CryptoQuoteResponse(
+            symbol: symbol,
+            name: symbol,
+            price: price,
+            changePercentage: changePct,
+            change: 0,
+            marketCap: marketCap,
+            timestamp: 0
+        )
+    }
+
+    private func makePressureHistory(symbol: String, sessions: Int, volume: Double, spikeLast: Double? = nil) -> [CryptoHistoricalLightPoint] {
+        let calendar = Calendar(identifier: .gregorian)
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return (0 ..< sessions).map { offset in
+            let date = calendar.date(byAdding: .day, value: -(sessions - 1 - offset), to: Date()) ?? Date()
+            let isLast = offset == sessions - 1
+            return CryptoHistoricalLightPoint(
+                symbol: symbol,
+                date: formatter.string(from: date),
+                price: 100,
+                volume: isLast ? (spikeLast ?? volume) : volume
+            )
+        }
+    }
+
+    @Test("Market pressure blends volume spike, price direction, and insider flow")
+    func marketPressureHappyPath() async throws {
+        try await withApp { app in
+            let state = TestMarketProviderState()
+            let fmpState = TestFMPProviderState()
+            await fmpState.setOverviewQuotes(
+                [makeOverviewQuote(symbol: "AAPL", price: 230, changePct: 2.4)],
+                forSymbols: ["AAPL"]
+            )
+            await fmpState.setPressureHistory(makePressureHistory(symbol: "AAPL", sessions: 40, volume: 1_000_000, spikeLast: 3_000_000))
+            await fmpState.setPressureInsiders([
+                FMPInsiderTrade(symbol: "AAPL", transactionDate: "2026-07-20", transactionType: "S-Sale", securitiesTransacted: 50000, reportingName: "Jane Exec", typeOfOwner: "officer", acquisitionOrDisposition: "D"),
+                FMPInsiderTrade(symbol: "AAPL", transactionDate: "2026-07-21", transactionType: "P-Purchase", securitiesTransacted: 10000, reportingName: "Sam Director", typeOfOwner: "director", acquisitionOrDisposition: "A"),
+            ])
+            app.marketDataService = makeTestMarketService(
+                state: state,
+                fmpProvider: TestFMPMarketDataProvider(state: fmpState),
+                fmpAccessTier: .premium
+            )
+            let (token, _) = try await registerTestUser(app: app, identifier: "pressurehappy")
+
+            try await app.testing().test(.GET, "v1/market/pressure/AAPL", beforeRequest: { req in
+                req.headers.bearerAuthorization = .init(token: token)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let body = try res.content.decode(MarketPressureResponse.self)
+                #expect(body.symbol == "AAPL")
+                #expect(body.volume.relative > 2.5)
+                #expect(body.temperature > 60)
+                #expect(body.insider?.buyCount == 1)
+                #expect(body.insider?.sellCount == 1)
+                #expect(body.insider?.netShares == -40000)
+                #expect(!body.history.isEmpty)
+                #expect(body.insider?.notable.first?.side == "sell")
+            })
+        }
+    }
+
+    @Test("Market pressure hides the insider section when the provider fails")
+    func marketPressureInsiderDegrades() async throws {
+        try await withApp { app in
+            let state = TestMarketProviderState()
+            let fmpState = TestFMPProviderState()
+            await fmpState.setOverviewQuotes(
+                [makeOverviewQuote(symbol: "MSFT", price: 500, changePct: -1.2)],
+                forSymbols: ["MSFT"]
+            )
+            await fmpState.setPressureHistory(makePressureHistory(symbol: "MSFT", sessions: 35, volume: 2_000_000))
+            await fmpState.setPressureInsidersThrow(true)
+            app.marketDataService = makeTestMarketService(
+                state: state,
+                fmpProvider: TestFMPMarketDataProvider(state: fmpState),
+                fmpAccessTier: .premium
+            )
+            let (token, _) = try await registerTestUser(app: app, identifier: "pressureinsiderdown")
+
+            try await app.testing().test(.GET, "v1/market/pressure/MSFT", beforeRequest: { req in
+                req.headers.bearerAuthorization = .init(token: token)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let body = try res.content.decode(MarketPressureResponse.self)
+                #expect(body.insider == nil)
+                #expect(body.temperature < 50)
+                #expect(body.label == "balanced" || body.label == "selling")
+            })
+        }
+    }
+
+    @Test("Market pressure 404s for unknown symbols")
+    func marketPressureUnknownSymbol() async throws {
+        try await withApp { app in
+            let state = TestMarketProviderState()
+            let fmpState = TestFMPProviderState()
+            app.marketDataService = makeTestMarketService(
+                state: state,
+                fmpProvider: TestFMPMarketDataProvider(state: fmpState),
+                fmpAccessTier: .premium
+            )
+            let (token, _) = try await registerTestUser(app: app, identifier: "pressureunknown")
+
+            try await app.testing().test(.GET, "v1/market/pressure/NOPE", beforeRequest: { req in
+                req.headers.bearerAuthorization = .init(token: token)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .notFound)
+            })
+        }
+    }
+
+    @Test("Pressure temperature formula behaves at the extremes")
+    func pressureTemperatureFormula() {
+        #expect(pressureTemperature(relativeVolume: 0, changePct: 0, insider: nil) == 50)
+        let hot = pressureTemperature(relativeVolume: 3, changePct: 4, insider: nil)
+        #expect(hot > 80)
+        let cold = pressureTemperature(relativeVolume: 3, changePct: -4, insider: nil)
+        #expect(cold < 20)
+        let sellingInsiders = MarketPressureInsider(
+            windowDays: 90, buyCount: 0, sellCount: 8, netShares: -500_000, lastActivityAt: nil, notable: []
+        )
+        let tilted = pressureTemperature(relativeVolume: 1, changePct: 0, insider: sellingInsiders)
+        #expect(tilted < 50)
+        #expect(pressureLabel(10) == "heavy selling")
+        #expect(pressureLabel(50) == "balanced")
+        #expect(pressureLabel(95) == "heavy buying")
+    }
+
     @Test("Archived market history endpoints read stored bars and sync provider data into the archive")
     func archivedMarketHistoryEndpoints() async throws {
         try await withApp { app in
@@ -4015,6 +4155,33 @@ struct StockPlanBackendTests {
             symbols.map { $0.uppercased() }.sorted().joined(separator: ",")
         }
 
+        private var pressureHistoryResult: [CryptoHistoricalLightPoint] = []
+        private var pressureInsiderResult: [FMPInsiderTrade] = []
+        private var pressureInsiderShouldThrow = false
+
+        func setPressureHistory(_ points: [CryptoHistoricalLightPoint]) {
+            pressureHistoryResult = points
+        }
+
+        func setPressureInsiders(_ trades: [FMPInsiderTrade]) {
+            pressureInsiderResult = trades
+        }
+
+        func setPressureInsidersThrow(_ value: Bool) {
+            pressureInsiderShouldThrow = value
+        }
+
+        func pressureHistory() -> [CryptoHistoricalLightPoint] {
+            pressureHistoryResult
+        }
+
+        func pressureInsiders() throws -> [FMPInsiderTrade] {
+            if pressureInsiderShouldThrow {
+                throw OverviewStubError()
+            }
+            return pressureInsiderResult
+        }
+
         private var balanceSheetRequests: [FinancialGrowthRequestCapture] = []
         private var cashFlowRequests: [FinancialGrowthRequestCapture] = []
         private var incomeStatementRequests: [FinancialGrowthRequestCapture] = []
@@ -4849,7 +5016,11 @@ struct StockPlanBackendTests {
             to _: String?,
             on _: Request
         ) async throws -> [CryptoHistoricalLightPoint] {
-            []
+            await state.pressureHistory()
+        }
+
+        func fetchInsiderTrades(symbol _: String, limit _: Int, on _: Request) async throws -> [FMPInsiderTrade] {
+            try await state.pressureInsiders()
         }
 
         // MARK: Market overview stubs
