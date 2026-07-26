@@ -18,6 +18,11 @@ struct DashboardController: RouteCollection {
     @Sendable
     func whyMoved(req: Request) async throws -> WhyMovedResponse {
         let session = try req.auth.require(SessionToken.self)
+        try await req.usageCounterService.requirePremium(
+            .aiInsights,
+            userId: session.userId,
+            on: req.db
+        )
         return try await req.application.whyMovedService.whyMoved(userId: session.userId, on: req)
     }
 

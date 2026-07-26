@@ -284,12 +284,28 @@ struct WhyMovedTests {
         }
     }
 
+    @Test("Free users are blocked from the AI-backed why-moved endpoint")
+    func whyMovedRequiresPremiumAIEntitlement() async throws {
+        try await withAppForWhyMoved { app, token, _ in
+            try await clearTrial(for: token, on: app)
+
+            try await app.testing().test(.GET, "v1/dashboard/why-moved", beforeRequest: { req in
+                req.headers.bearerAuthorization = .init(token: token)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .forbidden)
+                let body = res.body.string
+                #expect(body.contains("feature=ai_insights") || body.contains("\"feature\":\"ai_insights\""))
+            })
+        }
+    }
+
     // MARK: - Self-contained harness (mirrors StockPlanBackendTests.withApp)
 
     private func withAppForWhyMoved(
         _ body: (Application, String, WhyMovedStubState) async throws -> Void
     ) async throws {
         try await DatabaseTestLock.withLock {
+            setenv("BYPASS_BILLING", "false", 1)
             let app = try await Application.make(.testing)
             do {
                 try await configure(app)
@@ -331,5 +347,14 @@ struct WhyMovedTests {
             throw Abort(.internalServerError, reason: "Auth register did not return a token")
         }
         return token
+    }
+
+    private func clearTrial(for token: String, on app: Application) async throws {
+        let session = try await app.jwt.keys.verify(token, as: SessionToken.self)
+        let user = try #require(try await User.find(session.userId, on: app.db))
+        user.trialStartedAt = nil
+        user.trialDays = nil
+        user.trialTier = nil
+        try await user.save(on: app.db)
     }
 }

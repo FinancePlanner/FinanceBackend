@@ -220,12 +220,13 @@ struct GoCardlessProvider: BankProvider {
             return false
         }
 
-        if let existingPending = try await BankTransaction.query(on: db)
-            .filter(\.$accountId == accountId)
-            .filter(\.$dedupeHash == dedupeHash)
-            .filter(\.$pending == true)
-            .first()
-        {
+        if let existingPending = try await pendingMatchForBooked(
+            tx,
+            accountId: accountId,
+            dedupeHash: dedupeHash,
+            pending: pending,
+            on: db
+        ) {
             if existingPending.status == BankTransactionStatus.suggested.rawValue {
                 try await updateSuggested(
                     existingPending,
@@ -257,6 +258,35 @@ struct GoCardlessProvider: BankProvider {
         )
         try await row.save(on: db)
         return true
+    }
+
+    private func pendingMatchForBooked(
+        _ tx: GCTransaction,
+        accountId: UUID,
+        dedupeHash: String,
+        pending: Bool,
+        on db: any Database
+    ) async throws -> BankTransaction? {
+        guard !pending else { return nil }
+
+        if let internalTransactionId = tx.internalTransactionId,
+           !internalTransactionId.isEmpty,
+           let existing = try await BankTransaction.query(on: db)
+           .filter(\.$accountId == accountId)
+           .filter(\.$providerTxId == internalTransactionId)
+           .filter(\.$pending == true)
+           .first()
+        {
+            return existing
+        }
+
+        let hashMatches = try await BankTransaction.query(on: db)
+            .filter(\.$accountId == accountId)
+            .filter(\.$dedupeHash == dedupeHash)
+            .filter(\.$pending == true)
+            .all()
+
+        return hashMatches.count == 1 ? hashMatches[0] : nil
     }
 
     private func existingConnection(for flow: BankLinkFlow, on db: any Database) async throws -> BankConnection? {
