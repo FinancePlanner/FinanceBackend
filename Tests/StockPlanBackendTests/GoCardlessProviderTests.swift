@@ -136,8 +136,10 @@ struct GoCardlessProviderTests {
                 debtorName: nil
             )
 
-            #expect(try await provider.upsert(first, pending: true, account: account, userId: userId, on: app.db))
-            #expect(try await provider.upsert(second, pending: true, account: account, userId: userId, on: app.db))
+            let insertedFirst = try await provider.upsert(first, pending: true, account: account, userId: userId, on: app.db)
+            let insertedSecond = try await provider.upsert(second, pending: true, account: account, userId: userId, on: app.db)
+            #expect(insertedFirst)
+            #expect(insertedSecond)
 
             let transactions = try await BankTransaction.query(on: app.db).all()
             #expect(transactions.count == 2)
@@ -212,9 +214,12 @@ struct GoCardlessProviderTests {
                 debtorName: nil
             )
 
-            #expect(try await provider.upsert(firstPending, pending: true, account: account, userId: userId, on: app.db))
-            #expect(try await provider.upsert(secondPending, pending: true, account: account, userId: userId, on: app.db))
-            #expect(!(try await provider.upsert(booked, pending: false, account: account, userId: userId, on: app.db)))
+            let insertedFirstPending = try await provider.upsert(firstPending, pending: true, account: account, userId: userId, on: app.db)
+            let insertedSecondPending = try await provider.upsert(secondPending, pending: true, account: account, userId: userId, on: app.db)
+            let insertedBooked = try await provider.upsert(booked, pending: false, account: account, userId: userId, on: app.db)
+            #expect(insertedFirstPending)
+            #expect(insertedSecondPending)
+            #expect(!insertedBooked)
 
             let transactions = try await BankTransaction.query(on: app.db).all()
             #expect(transactions.count == 2)
