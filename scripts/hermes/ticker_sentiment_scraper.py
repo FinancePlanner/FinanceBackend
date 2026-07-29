@@ -315,15 +315,19 @@ def run_tickers(cfg: dict, db_path: str, dry_run: bool) -> None:
     conn = sqlite3.connect(db_path)
     conn.execute(TICKER_POSTS_SCHEMA)
     total_inserted = 0
+    attempted = 0
+    failed = 0
 
     for symbol in cfg["tickers"]:
         symbol = symbol.strip().lstrip("$").upper()
         if not symbol:
             continue
+        attempted += 1
         try:
             response = xai_chat(build_ticker_payload(cfg, symbol), cfg["request_timeout_seconds"])
         except RuntimeError as e:
             LOG.error("symbol=%s fetch failed: %s", symbol, e)
+            failed += 1
             continue
         log_usage(f"tickers:{symbol}", response)
 
@@ -332,6 +336,7 @@ def run_tickers(cfg: dict, db_path: str, dry_run: bool) -> None:
             items = extract_json_array(content)
         except (json.JSONDecodeError, ValueError):
             LOG.error("symbol=%s unparseable model output: %.200s", symbol, content)
+            failed += 1
             continue
 
         inserted = insert_ticker_post_rows(conn, symbol, items, cfg, dry_run)
@@ -339,7 +344,17 @@ def run_tickers(cfg: dict, db_path: str, dry_run: bool) -> None:
         LOG.info("symbol=%s extracted=%d inserted=%d", symbol, len(items), inserted)
 
     conn.close()
-    LOG.info("tickers done inserted=%d", total_inserted)
+    LOG.info("tickers done inserted=%d attempted=%d failed=%d", total_inserted, attempted, failed)
+
+    # Exit non-zero when nothing got through. Previously every symbol could fail
+    # (an invalid XAI_API_KEY does exactly that) and the process still exited 0,
+    # so systemd reported the timer as successful and the ingest silently froze
+    # for days. A hard failure is what makes the timer honest.
+    if attempted and failed == attempted:
+        raise SystemExit(
+            f"all {attempted} symbols failed — ingest produced nothing "
+            "(check XAI_API_KEY validity and xAI credits)"
+        )
 
 
 # ── Topic mode ────────────────────────────────────────────────────────────────
@@ -433,12 +448,16 @@ def run_topics(cfg: dict, db_path: str, raw_jsonl: str, dry_run: bool) -> None:
     conn = sqlite3.connect(db_path)
     raw_path = Path(raw_jsonl)
     total_inserted = 0
+    attempted = 0
+    failed = 0
 
     for topic, hint in cfg["topics"].items():
+        attempted += 1
         try:
             response = xai_chat(build_topic_payload(cfg, topic, hint), cfg["request_timeout_seconds"])
         except RuntimeError as e:
             LOG.error("topic=%s fetch failed: %s", topic, e)
+            failed += 1
             continue
         log_usage(f"topics:{topic}", response)
 
@@ -447,6 +466,7 @@ def run_topics(cfg: dict, db_path: str, raw_jsonl: str, dry_run: bool) -> None:
             items = extract_json_array(content)
         except (json.JSONDecodeError, ValueError):
             LOG.error("topic=%s unparseable model output: %.200s", topic, content)
+            failed += 1
             continue
 
         inserted = insert_topic_item_rows(conn, raw_path, topic, items, cfg, dry_run)
@@ -454,7 +474,14 @@ def run_topics(cfg: dict, db_path: str, raw_jsonl: str, dry_run: bool) -> None:
         LOG.info("topic=%s extracted=%d inserted=%d", topic, len(items), inserted)
 
     conn.close()
-    LOG.info("topics done inserted=%d", total_inserted)
+    LOG.info("topics done inserted=%d attempted=%d failed=%d", total_inserted, attempted, failed)
+
+    # Same reasoning as run_tickers: a total failure must not exit 0.
+    if attempted and failed == attempted:
+        raise SystemExit(
+            f"all {attempted} topics failed — ingest produced nothing "
+            "(check XAI_API_KEY validity and xAI credits)"
+        )
 
 
 # ── File ingest mode (Hermes agent hand-off) ─────────────────────────────────

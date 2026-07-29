@@ -47,6 +47,31 @@ Built. Uses the xAI Agent Tools API (no HTML scraping) — see
   xAI API credits to actually run).
 - Deploy: `./deploy-ticker-scraper.sh` (uploads, installs timers, runs a live
   verification pass).
+- Both modes now exit non-zero when *every* symbol/topic fails, so systemd
+  marks the timer failed instead of reporting success on an empty run.
+
+## Freeze post-mortem (2026-07-29)
+
+`ticker_posts` stopped growing after 2026-07-28 and prod's `hermes_sync`
+logged `ticker_posts=0` on every 15-minute tick. Two independent causes:
+
+1. **The systemd timers were not installed on the VPS.** `finance-api.service`
+   survived the rebuild; `hermes-ticker-scraper.timer` and
+   `hermes-topic-ingest.timer` did not, so the ingest only ran when someone
+   ran it by hand. Re-run `./deploy-ticker-scraper.sh` after any VPS rebuild,
+   and check `systemctl list-timers 'hermes-*'` as part of the rebuild
+   checklist.
+2. **`XAI_API_KEY` is rejected by xAI** — `HTTP 400 {"code":"invalid-argument",
+   "error":"Incorrect API key provided"}`. Not missing, invalid. The key needs
+   rotating at <https://console.x.ai>; timers alone do not fix this.
+
+Cause 2 hid behind the old exit-code behaviour: every symbol failed, the
+process still exited 0, and the timer reported success. Hence the change above.
+
+Diagnosing this from prod: `hermes_sync` now logs `ticker_posts_fetched` and
+`ticker_posts_newest` alongside `ticker_posts`. `ticker_posts=0` with
+`ticker_posts_fetched>0` is a healthy steady state (nothing new upstream);
+`ticker_posts_fetched=0` means the feed itself is dead.
 
 ## Data-quality warning (as of 2026-07-03)
 

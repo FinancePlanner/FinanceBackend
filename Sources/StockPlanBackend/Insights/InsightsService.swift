@@ -122,13 +122,16 @@ struct DefaultInsightsService: InsightsService {
         let eventsInserted = try await syncEvents(on: req)
         let snapshotsUpserted = try await syncSentimentSnapshots(on: req)
         let netWorthInserted = try await syncNetWorth(on: req)
-        let tickerPostsInserted = await syncTickerPosts(on: req)
+        let tickerPosts = await syncTickerPosts(on: req)
 
         return InsightsSyncSummary(
             eventsInserted: eventsInserted,
             snapshotsUpserted: snapshotsUpserted,
-            tickerPostsInserted: tickerPostsInserted,
-            netWorthInserted: netWorthInserted
+            tickerPostsInserted: tickerPosts.inserted,
+            netWorthInserted: netWorthInserted,
+            tickerPostsFetched: tickerPosts.fetched,
+            tickerPostsNewestAt: tickerPosts.newestAt,
+            tickerSymbolsFailed: tickerPosts.symbolsFailed
         )
     }
 }
@@ -203,7 +206,14 @@ private extension DefaultInsightsService {
         return try await repo.insertNewNetWorthSnapshots(snapshots, on: req.db)
     }
 
-    func syncTickerPosts(on req: Request) async -> Int {
+    struct TickerPostSyncResult {
+        var inserted = 0
+        var fetched = 0
+        var newestAt: Date?
+        var symbolsFailed = 0
+    }
+
+    func syncTickerPosts(on req: Request) async -> TickerPostSyncResult {
         // Resolve the scrape/pull set at sync time: pinned symbols plus the
         // top-N most-popular equities across all users' holdings + watchlist.
         var symbols: [String] = []
@@ -219,10 +229,11 @@ private extension DefaultInsightsService {
             symbols = pinnedTickers
         }
 
-        var inserted = 0
+        var result = TickerPostSyncResult()
         for symbol in symbols {
             do {
                 let response = try await provider.fetchTickerPosts(symbol: symbol, days: 30, limit: 100, on: req)
+                result.fetched += response.posts.count
                 let models = response.posts.compactMap { post -> TickerSentimentPost? in
                     guard let text = post.text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else {
                         return nil
@@ -240,12 +251,18 @@ private extension DefaultInsightsService {
                         postedAt: parseHermesTimestamp(post.postedAt) ?? Date()
                     )
                 }
-                inserted += try await repo.insertNewTickerPosts(models, on: req.db)
+                if let newest = models.map(\.postedAt).max(),
+                   newest > (result.newestAt ?? .distantPast)
+                {
+                    result.newestAt = newest
+                }
+                result.inserted += try await repo.insertNewTickerPosts(models, on: req.db)
             } catch {
+                result.symbolsFailed += 1
                 req.logger.warning("insights.sync ticker posts failed symbol=\(symbol) error=\(String(describing: error))")
             }
         }
-        return inserted
+        return result
     }
 
     func makeSnapshot(

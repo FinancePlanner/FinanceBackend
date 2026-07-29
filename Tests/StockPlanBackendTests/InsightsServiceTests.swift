@@ -79,6 +79,52 @@ private struct StubInsightsProvider: InsightsProvider {
     }
 }
 
+/// Same as `StubInsightsProvider` except the ticker feed is dead: either empty
+/// or throwing. Both cases insert 0 posts, which is exactly what a healthy
+/// steady state also inserts — the point of the freshness fields.
+private struct DeadTickerFeedProvider: InsightsProvider {
+    enum Mode {
+        case empty
+        case throwing
+    }
+
+    let mode: Mode
+    private let healthy = StubInsightsProvider()
+
+    var isEnabled: Bool {
+        true
+    }
+
+    func fetchEvents(days: Int, limit: Int, on req: Request) async throws -> HermesEventsResponse {
+        try await healthy.fetchEvents(days: days, limit: limit, on: req)
+    }
+
+    func fetchSummary(days: Int, on req: Request) async throws -> HermesSummaryResponse {
+        try await healthy.fetchSummary(days: days, on: req)
+    }
+
+    func fetchSentiment(topic: String?, days: Int, on req: Request) async throws -> HermesSentimentResponse {
+        try await healthy.fetchSentiment(topic: topic, days: days, on: req)
+    }
+
+    func fetchNetWorth(on req: Request) async throws -> HermesNetWorthResponse {
+        try await healthy.fetchNetWorth(on: req)
+    }
+
+    func fetchTickerPosts(symbol: String, days: Int, limit _: Int, on _: Request) async throws -> HermesTickerPostsResponse {
+        switch mode {
+        case .empty:
+            return HermesTickerPostsResponse(symbol: symbol, days: days, count: 0, posts: [])
+        case .throwing:
+            throw Abort(.badGateway, reason: "upstream ticker feed rejected the request")
+        }
+    }
+
+    func health(on _: Request) async -> Bool {
+        true
+    }
+}
+
 @Suite("InsightsService Tests", .serialized)
 struct InsightsServiceTests {
     private func withApp(_ test: (Application) async throws -> Void) async throws {
@@ -405,6 +451,51 @@ struct InsightsServiceTests {
             _ = try await service.syncFromHermes(on: req)
             let posts = try await TickerSentimentPost.query(on: app.db).filter(\.$symbol == "AMD").count()
             #expect(posts >= 1)
+        }
+    }
+
+    @Test("Sync summary distinguishes a healthy steady state from a dead ticker feed")
+    func syncSummaryReportsTickerFreshness() async throws {
+        try await withApp { app in
+            let (_, userId) = try await registerTestUser(app: app)
+            try await createHolding(symbol: "AMD", userId: userId, on: app.db)
+
+            func sync(_ provider: some InsightsProvider) async throws -> InsightsSyncSummary {
+                let service = DefaultInsightsService(
+                    repo: DatabaseInsightsRepository(),
+                    provider: provider,
+                    tickerLimit: 25,
+                    pinnedTickers: []
+                )
+                let req = Request(application: app, on: app.eventLoopGroup.next())
+                return try await service.syncFromHermes(on: req)
+            }
+
+            // Healthy: posts arrive and get inserted.
+            let first = try await sync(StubInsightsProvider())
+            #expect(first.tickerPostsInserted > 0)
+            #expect(first.tickerPostsFetched > 0)
+            #expect(first.tickerPostsNewestAt != nil)
+            #expect(first.tickerSymbolsFailed == 0)
+
+            // Healthy steady state: nothing new upstream, so nothing inserted —
+            // but the feed is still delivering, which fetched/newest must show.
+            let second = try await sync(StubInsightsProvider())
+            #expect(second.tickerPostsInserted == 0)
+            #expect(second.tickerPostsFetched > 0)
+            #expect(second.tickerPostsNewestAt != nil)
+
+            // Dead feed: also 0 inserted. Only fetched separates it from above.
+            let empty = try await sync(DeadTickerFeedProvider(mode: .empty))
+            #expect(empty.tickerPostsInserted == 0)
+            #expect(empty.tickerPostsFetched == 0)
+            #expect(empty.tickerPostsNewestAt == nil)
+
+            // Broken feed: surfaced as failures, not as a quiet success.
+            let failing = try await sync(DeadTickerFeedProvider(mode: .throwing))
+            #expect(failing.tickerPostsInserted == 0)
+            #expect(failing.tickerPostsFetched == 0)
+            #expect(failing.tickerSymbolsFailed > 0)
         }
     }
 
