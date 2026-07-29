@@ -3012,6 +3012,40 @@ struct StockPlanBackendTests {
         }
     }
 
+    @Test("IBKR Web Service credentials cannot overwrite an existing Gateway connection")
+    func ibkrCredentialsRejectCrossModeOverwrite() async throws {
+        try await withApp { app in
+            let (token, userId) = try await registerTestUser(app: app)
+            let existing = BrokerConnection(
+                userId: userId,
+                provider: "ibkr",
+                externalId: "DU123456",
+                accessToken: "encrypted-oauth-access",
+                refreshToken: "encrypted-oauth-refresh",
+                expiresAt: Date().addingTimeInterval(3600),
+                status: "connected",
+                displayName: "IBKR Gateway",
+                connectedAt: Date()
+            )
+            try await existing.save(on: app.db)
+
+            let payload = #"{"token":"sod-token","queryId":"daily-query"}"#
+            try await app.testing().test(.POST, "v1/brokers/ibkr/connect/credentials", beforeRequest: { req in
+                req.headers.bearerAuthorization = .init(token: token)
+                req.headers.contentType = .json
+                req.body = ByteBufferAllocator().buffer(string: payload)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .conflict)
+            })
+
+            let stored = try await BrokerConnection.find(existing.requireID(), on: app.db)
+            #expect(stored?.externalId == "DU123456")
+            #expect(stored?.accessToken == "encrypted-oauth-access")
+            #expect(stored?.refreshToken == "encrypted-oauth-refresh")
+            #expect(stored?.status == "connected")
+        }
+    }
+
     @Test("Previewing CSV handles header aliases and row errors")
     func previewCsvSupportsHeaderAliasesAndReportsRowErrors() async throws {
         try await withApp { app in

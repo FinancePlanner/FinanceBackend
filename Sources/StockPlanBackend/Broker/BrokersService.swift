@@ -49,6 +49,16 @@ enum IBKRConnectMarkers {
     static let sodWebService = "sod-web-service"
 }
 
+private enum IBKRConnectionMode: String {
+    case gateway = "Gateway"
+    case sodWebService = "Web Service"
+
+    init?(externalId: String?) {
+        guard let externalId else { return nil }
+        self = externalId == IBKRConnectMarkers.sodWebService ? .sodWebService : .gateway
+    }
+}
+
 struct DefaultBrokersService: BrokersService {
     let repo: any BrokersRepository
     let ibkrGatewayClient: IBKRBrokerGatewayClient
@@ -161,6 +171,13 @@ struct DefaultBrokersService: BrokersService {
         guard !trimmedQueryId.isEmpty else {
             throw Abort(.badRequest, reason: "IBKR Web Service query ID is required.")
         }
+        if let conflictReason = try await ibkrConnectionModeConflictReason(
+            desiredMode: .sodWebService,
+            userId: userId,
+            on: req.db
+        ) {
+            throw Abort(.conflict, reason: conflictReason)
+        }
 
         let resolvedPortfolioListId = try await resolvePortfolioListId(
             requestedId: portfolioListId,
@@ -217,6 +234,14 @@ struct DefaultBrokersService: BrokersService {
 
         flow.usedAt = now
         try await flow.save(on: req.db)
+
+        if let conflictReason = try await ibkrConnectionModeConflictReason(
+            desiredMode: .gateway,
+            userId: flow.userId,
+            on: req.db
+        ) {
+            return redirectResponse(to: brokerAppRedirectURL(base: flow.redirectURI, status: "error", error: conflictReason))
+        }
 
         do {
             if let error = error?.trimmingCharacters(in: .whitespacesAndNewlines), !error.isEmpty {
@@ -564,6 +589,21 @@ private extension DefaultBrokersService {
         connection.updatedAt = Date()
         try await connection.save(on: db)
         return connection
+    }
+
+    private func ibkrConnectionModeConflictReason(
+        desiredMode: IBKRConnectionMode,
+        userId: UUID,
+        on db: any Database
+    ) async throws -> String? {
+        guard let existing = try await repo.find(provider: "ibkr", userId: userId, on: db),
+              existing.status != "disconnected",
+              let existingMode = IBKRConnectionMode(externalId: existing.externalId),
+              existingMode != desiredMode
+        else {
+            return nil
+        }
+        return "Disconnect the existing IBKR \(existingMode.rawValue) connection before connecting IBKR \(desiredMode.rawValue)."
     }
 
     func brokerErrorMessage(_ error: any Error) -> String {
