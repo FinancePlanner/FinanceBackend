@@ -187,6 +187,15 @@ struct InsightsSyncSummary: Content {
     let snapshotsUpserted: Int
     let tickerPostsInserted: Int
     let netWorthInserted: Int
+    /// Ticker posts Hermes returned this tick, inserted or not. Inserted alone
+    /// cannot tell a healthy steady state (nothing new upstream) apart from a
+    /// broken link (nothing upstream at all) — both log 0.
+    let tickerPostsFetched: Int
+    /// Newest `postedAt` across everything Hermes returned, so a stale
+    /// pipeline is visible in the log line instead of only in the database.
+    let tickerPostsNewestAt: Date?
+    /// Symbols whose fetch threw, so a partial outage is not read as healthy.
+    let tickerSymbolsFailed: Int
 }
 
 struct TrackedSymbolsResponse: Content {

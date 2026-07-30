@@ -53,9 +53,19 @@ final class HermesSyncJob: LifecycleHandler, @unchecked Sendable {
         do {
             let summary = try await app.insightsService.syncFromHermes(on: req)
             app.insightsSyncStatus.recordSuccess()
+            // ticker_posts is the *inserted* count, so it sits at 0 both when
+            // the pipeline is healthy with nothing new and when it has stopped
+            // producing entirely. fetched / newest / symbols_failed separate
+            // those without a database query.
+            let newest = summary.tickerPostsNewestAt?.ISO8601Format() ?? "none"
             app.logger.info(
-                "hermes_sync ok events=\(summary.eventsInserted) snapshots=\(summary.snapshotsUpserted) ticker_posts=\(summary.tickerPostsInserted) net_worth=\(summary.netWorthInserted)"
+                "hermes_sync ok events=\(summary.eventsInserted) snapshots=\(summary.snapshotsUpserted) ticker_posts=\(summary.tickerPostsInserted) net_worth=\(summary.netWorthInserted) ticker_posts_fetched=\(summary.tickerPostsFetched) ticker_posts_newest=\(newest) ticker_symbols_failed=\(summary.tickerSymbolsFailed)"
             )
+            if summary.tickerPostsFetched == 0 {
+                app.logger.warning(
+                    "hermes_sync ticker feed returned nothing: symbols_failed=\(summary.tickerSymbolsFailed). The upstream scraper is not producing posts."
+                )
+            }
         } catch {
             // String(reflecting:) — PSQLError's description is deliberately
             // opaque, which cost a full debugging cycle here.
