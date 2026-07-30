@@ -1,4 +1,15 @@
 #!/usr/bin/env bash
+# SUPERSEDED — DO NOT RUN AGAINST THE LIVE VPS.
+#
+# Since 2026-07-29 retrieval runs as Hermes agent cron jobs
+# (hermes-ticker-sentiment 30 13,17,21 * * 1-5, hermes-topic-sentiment 0 6 * * *,
+# hermes-sentiment-score-ingest 45 6,13,17,21 * * *), not systemd. The timers
+# installed below run every 45 minutes — the exact cadence that was disabled on
+# purpose because re-scraping a 7-day window that often was ~92% redundant and
+# most of the xAI bill. Running this double-schedules the ingest and undoes that.
+#
+# Kept for reference and for standing the pipeline up somewhere new. See README.md.
+#
 # Deploys the xAI Agent Tools ingest (ticker + topic) to the Hermes VPS and
 # installs systemd timers.
 #
