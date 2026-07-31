@@ -210,6 +210,18 @@ struct OpenAPIDocsTests {
                 #expect(body.contains("/v1/users/{id}:"))
                 #expect(body.contains("/v1/dashboard/insights:"))
                 #expect(body.contains("/v1/expenses/partner:"))
+                // norviq-web generates its entire API client from this file, so
+                // an undocumented endpoint is an endpoint the web app cannot call.
+                #expect(body.contains("/v1/expenses/import/spreadsheet:"))
+                #expect(body.contains("/v1/expenses/import/spreadsheet/{sessionId}:"))
+                #expect(body.contains("/v1/expenses/import/spreadsheet/{sessionId}/preview:"))
+                #expect(body.contains("/v1/expenses/import/spreadsheet/{sessionId}/commit:"))
+                #expect(body.contains("operationId: analyzeExpenseSpreadsheet"))
+                #expect(body.contains("operationId: previewExpenseSpreadsheetImport"))
+                #expect(body.contains("operationId: commitExpenseSpreadsheetImport"))
+                #expect(body.contains("operationId: discardExpenseSpreadsheetImport"))
+                #expect(body.contains("SpreadsheetImportAnalysisResponse:"))
+                #expect(body.contains("SpreadsheetImportDecisionRequest:"))
                 #expect(body.contains("/v1/reports/overview:"))
                 #expect(body.contains("/v1/reports/suggestions:"))
                 #expect(body.contains("/v1/reports/suggestions/{id}/dismiss:"))

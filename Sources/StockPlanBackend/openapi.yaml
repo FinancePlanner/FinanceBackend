@@ -4411,6 +4411,186 @@ paths:
         '404':
           description: Not Found
 
+  /v1/expenses/import/spreadsheet:
+    post:
+      operationId: analyzeExpenseSpreadsheet
+      tags: [Expenses]
+      summary: Upload a spreadsheet and get a proposed mapping
+      description: >-
+        Parses an .xlsx workbook, proposes a column and category mapping, and
+        opens a short-lived import session. Pro feature — requires the
+        spreadsheet_import entitlement. The uploaded file is never stored; the
+        parsed rows are held encrypted for one hour so the mapping can be
+        revised without re-uploading. Legacy .xls is not supported.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+              required: [file]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SpreadsheetImportAnalysisResponse'
+        '400':
+          description: Unreadable, password-protected, or contains no expense table
+        '401':
+          description: Unauthorized
+        '402':
+          description: Pro entitlement required
+        '413':
+          description: Spreadsheet exceeds the size limit
+        '415':
+          description: Legacy .xls — re-save as .xlsx
+        '429':
+          description: Rate limit or daily AI limit reached
+
+  /v1/expenses/import/spreadsheet/{sessionId}:
+    get:
+      operationId: getExpenseSpreadsheetImport
+      tags: [Expenses]
+      summary: Resume an import session
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SpreadsheetImportAnalysisResponse'
+        '401':
+          description: Unauthorized
+        '404':
+          description: Session missing or expired
+        '409':
+          description: Session already committed
+    delete:
+      operationId: discardExpenseSpreadsheetImport
+      tags: [Expenses]
+      summary: Cancel an import and delete its stored rows
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: No Content
+        '401':
+          description: Unauthorized
+
+  /v1/expenses/import/spreadsheet/{sessionId}/preview:
+    post:
+      operationId: previewExpenseSpreadsheetImport
+      tags: [Expenses]
+      summary: Re-derive the preview after a mapping change
+      description: >-
+        Applies the user's decisions to the stored rows and returns what would
+        be imported. Makes no AI call and writes no expenses.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SpreadsheetImportDecisionRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SpreadsheetImportPreviewResponse'
+        '401':
+          description: Unauthorized
+        '402':
+          description: Pro entitlement required
+        '404':
+          description: Session missing or expired
+        '409':
+          description: Session already committed
+
+  /v1/expenses/import/spreadsheet/{sessionId}/commit:
+    post:
+      operationId: commitExpenseSpreadsheetImport
+      tags: [Expenses]
+      summary: Write the approved rows as expenses
+      description: >-
+        Creates any confirmed new categories, then inserts the rows that came
+        out importable. Send an Idempotency-Key so a retried request cannot
+        double-insert.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SpreadsheetImportDecisionRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SpreadsheetImportCommitResponse'
+        '400':
+          description: Mapping would create too many new categories
+        '401':
+          description: Unauthorized
+        '402':
+          description: Pro entitlement required
+        '404':
+          description: Session missing or expired
+        '409':
+          description: Session already committed
+
   /v1/expenses/recurring:
     get:
       operationId: listRecurringTemplates
@@ -10142,6 +10322,389 @@ components:
           nullable: true
       required: [id, title, amount, pillar, frequency, splitMode, userSharePercent]
 
+    SpreadsheetImportField:
+      type: string
+      description: What a spreadsheet column maps to on an expense.
+      enum: [title, amount, date, category, pillar, notes, currency, externalId, ignore, unknown]
+    SpreadsheetMappingSource:
+      type: string
+      description: Where a mapping decision came from.
+      enum: [heuristic, ai, user, unknown]
+    SpreadsheetImportAmountSign:
+      type: string
+      description: How the amount column encodes an expense.
+      enum: [positiveIsExpense, negativeIsExpense, separateDebitCredit]
+    SpreadsheetImportRowStatus:
+      type: string
+      description: Per-row verdict. Only `ok` rows are written on commit.
+      enum:
+        - ok
+        - duplicateInFile
+        - duplicateExisting
+        - invalidDate
+        - invalidAmount
+        - missingTitle
+        - needsCategory
+        - needsExchangeRate
+        - aggregateRow
+        - skippedByUser
+        - unknown
+    SpreadsheetImportColumn:
+      type: object
+      properties:
+        letter:
+          type: string
+          description: Spreadsheet column letter, e.g. "G".
+        header:
+          type: string
+          nullable: true
+        detectedType:
+          type: string
+        sampleValues:
+          type: array
+          items:
+            type: string
+        field:
+          $ref: '#/components/schemas/SpreadsheetImportField'
+        confidence:
+          type: number
+          format: double
+        source:
+          $ref: '#/components/schemas/SpreadsheetMappingSource'
+      required: [letter, detectedType, sampleValues, field, confidence, source]
+    SpreadsheetImportSheet:
+      type: object
+      properties:
+        name:
+          type: string
+        index:
+          type: integer
+        rowCount:
+          type: integer
+        headerRow:
+          type: integer
+          description: 1-based. Frequently not row 1.
+        dataStartRow:
+          type: integer
+        dataEndRow:
+          type: integer
+        include:
+          type: boolean
+        isRecommended:
+          type: boolean
+        columns:
+          type: array
+          items:
+            $ref: '#/components/schemas/SpreadsheetImportColumn'
+        excludedRows:
+          type: array
+          description: Rows excluded up front, such as totals.
+          items:
+            type: integer
+        notes:
+          type: array
+          items:
+            type: string
+      required:
+        - name
+        - index
+        - rowCount
+        - headerRow
+        - dataStartRow
+        - dataEndRow
+        - include
+        - isRecommended
+        - columns
+        - excludedRows
+        - notes
+    SpreadsheetImportCategoryMapping:
+      type: object
+      description: >-
+        Maps one distinct value of the source category column onto Norviq's
+        model. `pillar` is null when the server could not match it; the user
+        decides rather than the server inventing one.
+      properties:
+        sourceValue:
+          type: string
+        pillar:
+          type: string
+          nullable: true
+        categoryId:
+          type: string
+          nullable: true
+        categoryName:
+          type: string
+          nullable: true
+        createCategory:
+          type: boolean
+        confidence:
+          type: number
+          format: double
+        source:
+          $ref: '#/components/schemas/SpreadsheetMappingSource'
+      required: [sourceValue, createCategory, confidence, source]
+    SpreadsheetImportPreviewRow:
+      type: object
+      properties:
+        sheetName:
+          type: string
+        row:
+          type: integer
+          description: 1-based worksheet row, matching what the user sees in Excel.
+        title:
+          type: string
+          nullable: true
+        amount:
+          type: number
+          format: double
+          nullable: true
+        currency:
+          type: string
+          nullable: true
+        occurredOn:
+          type: string
+          nullable: true
+        pillar:
+          type: string
+          nullable: true
+        categoryId:
+          type: string
+          nullable: true
+        categoryName:
+          type: string
+          nullable: true
+        sourceCategoryValue:
+          type: string
+          nullable: true
+        status:
+          $ref: '#/components/schemas/SpreadsheetImportRowStatus'
+        message:
+          type: string
+          nullable: true
+      required: [sheetName, row, status]
+    SpreadsheetImportPreview:
+      type: object
+      description: Counts describe the whole import; `rows` is capped.
+      properties:
+        totalRows:
+          type: integer
+        importableRows:
+          type: integer
+        duplicateRows:
+          type: integer
+        needsAttentionRows:
+          type: integer
+        excludedRows:
+          type: integer
+        detectedCurrencies:
+          type: array
+          items:
+            type: string
+        dateRangeStart:
+          type: string
+          nullable: true
+        dateRangeEnd:
+          type: string
+          nullable: true
+        totalAmount:
+          type: number
+          format: double
+        rows:
+          type: array
+          items:
+            $ref: '#/components/schemas/SpreadsheetImportPreviewRow'
+        truncated:
+          type: boolean
+      required:
+        - totalRows
+        - importableRows
+        - duplicateRows
+        - needsAttentionRows
+        - excludedRows
+        - detectedCurrencies
+        - totalAmount
+        - rows
+        - truncated
+    SpreadsheetImportRowOverride:
+      type: object
+      properties:
+        sheetName:
+          type: string
+        row:
+          type: integer
+        include:
+          type: boolean
+        title:
+          type: string
+          nullable: true
+        amount:
+          type: number
+          format: double
+          nullable: true
+        occurredOn:
+          type: string
+          nullable: true
+        pillar:
+          type: string
+          nullable: true
+        categoryId:
+          type: string
+          nullable: true
+      required: [sheetName, row, include]
+    SpreadsheetImportDecisionRequest:
+      type: object
+      description: >-
+        Everything the user decided. Sent to both preview and commit, which run
+        the same derivation, so the two can never disagree.
+      properties:
+        sheets:
+          type: array
+          items:
+            $ref: '#/components/schemas/SpreadsheetImportSheet'
+        categoryMappings:
+          type: array
+          items:
+            $ref: '#/components/schemas/SpreadsheetImportCategoryMapping'
+        rowOverrides:
+          type: array
+          items:
+            $ref: '#/components/schemas/SpreadsheetImportRowOverride'
+        amountSign:
+          $ref: '#/components/schemas/SpreadsheetImportAmountSign'
+        dateFormat:
+          type: string
+          nullable: true
+          description: dayFirst or monthFirst. Explicit because 03/04/2026 is ambiguous.
+        decimalSeparator:
+          type: string
+          nullable: true
+        currency:
+          type: string
+          nullable: true
+        exchangeRates:
+          type: object
+          description: >-
+            Rate per source currency. Rows in an unrated foreign currency are
+            skipped rather than converted at par.
+          additionalProperties:
+            type: number
+            format: double
+      required: [sheets, amountSign]
+    SpreadsheetImportAnalysisResponse:
+      type: object
+      properties:
+        sessionId:
+          type: string
+        fileName:
+          type: string
+        expiresAt:
+          type: string
+          description: ISO-8601. After this the session is gone and the file must be re-uploaded.
+        sheets:
+          type: array
+          items:
+            $ref: '#/components/schemas/SpreadsheetImportSheet'
+        categoryMappings:
+          type: array
+          items:
+            $ref: '#/components/schemas/SpreadsheetImportCategoryMapping'
+        amountSign:
+          $ref: '#/components/schemas/SpreadsheetImportAmountSign'
+        detectedCurrency:
+          type: string
+          nullable: true
+        baseCurrency:
+          type: string
+          nullable: true
+        dateFormat:
+          type: string
+          nullable: true
+        preview:
+          $ref: '#/components/schemas/SpreadsheetImportPreview'
+        aiAvailable:
+          type: boolean
+          description: >-
+            False when no model was consulted. The import still works from
+            heuristics; clients should say so rather than imply otherwise.
+        aiConfidence:
+          type: number
+          format: double
+          nullable: true
+        warnings:
+          type: array
+          items:
+            type: string
+      required:
+        - sessionId
+        - fileName
+        - expiresAt
+        - sheets
+        - categoryMappings
+        - amountSign
+        - preview
+        - aiAvailable
+        - warnings
+    SpreadsheetImportPreviewResponse:
+      type: object
+      properties:
+        sessionId:
+          type: string
+        sheets:
+          type: array
+          items:
+            $ref: '#/components/schemas/SpreadsheetImportSheet'
+        categoryMappings:
+          type: array
+          items:
+            $ref: '#/components/schemas/SpreadsheetImportCategoryMapping'
+        preview:
+          $ref: '#/components/schemas/SpreadsheetImportPreview'
+        warnings:
+          type: array
+          items:
+            type: string
+      required: [sessionId, sheets, categoryMappings, preview, warnings]
+    SpreadsheetImportRowResult:
+      type: object
+      properties:
+        sheetName:
+          type: string
+        row:
+          type: integer
+        status:
+          $ref: '#/components/schemas/SpreadsheetImportRowStatus'
+        message:
+          type: string
+          nullable: true
+        expenseId:
+          type: string
+          nullable: true
+      required: [sheetName, row, status]
+    SpreadsheetImportCommitResponse:
+      type: object
+      properties:
+        sessionId:
+          type: string
+        imported:
+          type: integer
+        skipped:
+          type: integer
+        failed:
+          type: integer
+        createdCategories:
+          type: array
+          items:
+            type: string
+        monthsTouched:
+          type: array
+          description: YYYY-MM for every month touched.
+          items:
+            type: string
+        rows:
+          type: array
+          items:
+            $ref: '#/components/schemas/SpreadsheetImportRowResult'
+      required: [sessionId, imported, skipped, failed, createdCategories, monthsTouched, rows]
     ExpenseRequest:
       type: object
       properties:
