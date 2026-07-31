@@ -337,3 +337,17 @@ extension ThesisWatchStory: @retroactive Content {}
 extension ThesisWatchFeedbackRequest: @retroactive Content {}
 extension ThesisWatchNotificationPreferences: @retroactive Content {}
 extension UpdateThesisWatchNotificationPreferences: @retroactive Content {}
+
+// MARK: - Spreadsheet import
+
+extension SpreadsheetImportColumn: @retroactive Content {}
+extension SpreadsheetImportSheet: @retroactive Content {}
+extension SpreadsheetImportCategoryMapping: @retroactive Content {}
+extension SpreadsheetImportPreviewRow: @retroactive Content {}
+extension SpreadsheetImportPreview: @retroactive Content {}
+extension SpreadsheetImportRowOverride: @retroactive Content {}
+extension SpreadsheetImportDecisionRequest: @retroactive Content {}
+extension SpreadsheetImportAnalysisResponse: @retroactive Content {}
+extension SpreadsheetImportPreviewResponse: @retroactive Content {}
+extension SpreadsheetImportRowResult: @retroactive Content {}
+extension SpreadsheetImportCommitResponse: @retroactive Content {}

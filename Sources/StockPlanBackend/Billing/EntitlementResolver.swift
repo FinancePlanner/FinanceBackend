@@ -142,6 +142,10 @@ enum BillingFeature: String {
     case receiptScan = "receipt_scan"
     /// Read-only bank sync (Plaid, GoCardless) into the expense flow — Pro/trial only.
     case bankSync = "bank_sync"
+    /// AI-assisted .xlsx expense import — Pro/trial only. Distinct from
+    /// `csvImports`, which is a counted free-tier allowance with different
+    /// semantics; this one costs an AI call per upload.
+    case spreadsheetImport = "spreadsheet_import"
     /// Retirement, joint, and hypothetical portfolios beyond the free personal portfolio.
     case advancedPortfolios = "advanced_portfolios"
     /// Sharing a portfolio with verified editor accounts.
@@ -213,6 +217,7 @@ struct BillingPlanLimits {
              .advancedResearch, .peerComparison, .earningsText,
              .householdPartner, .recurringTemplates, .yearOverview, .smartSuggestions,
              .crypto, .aiInsights, .mcpAccess, .scenarioPlanning, .taxOptimization, .receiptScan, .bankSync,
+             .spreadsheetImport,
              .advancedPortfolios, .jointPortfolios, .advancedReportTemplates,
              .advancedReportSchedules, .advancedReportRuns,
              .netWorthForecasting, .smartScreening, .rebalancingRules, .goalPlanning:
@@ -319,6 +324,7 @@ struct DefaultUsageCounterService: UsageCounterService {
              .statistics, .marketFundamentals, .advancedResearch, .peerComparison, .earningsText,
              .householdPartner, .recurringTemplates, .yearOverview, .smartSuggestions,
              .crypto, .aiInsights, .mcpAccess, .scenarioPlanning, .taxOptimization, .receiptScan, .bankSync,
+             .spreadsheetImport,
              .advancedPortfolios, .jointPortfolios, .advancedReportTemplates,
              .advancedReportSchedules, .advancedReportRuns,
              .netWorthForecasting, .smartScreening, .rebalancingRules, .goalPlanning:
@@ -342,6 +348,7 @@ struct DefaultUsageCounterService: UsageCounterService {
              .statistics, .marketFundamentals, .advancedResearch, .peerComparison, .earningsText,
              .householdPartner, .recurringTemplates, .yearOverview, .smartSuggestions,
              .crypto, .aiInsights, .mcpAccess, .scenarioPlanning, .taxOptimization, .receiptScan, .bankSync,
+             .spreadsheetImport,
              .advancedPortfolios, .jointPortfolios, .advancedReportTemplates,
              .advancedReportSchedules, .advancedReportRuns,
              .netWorthForecasting, .smartScreening, .rebalancingRules, .goalPlanning:
