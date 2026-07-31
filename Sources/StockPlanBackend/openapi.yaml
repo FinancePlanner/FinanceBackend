@@ -4411,6 +4411,86 @@ paths:
         '404':
           description: Not Found
 
+  /v1/expenses/import:
+    post:
+      operationId: importExpensesCsv
+      tags: [Expenses]
+      summary: Import expenses from CSV
+      description: >-
+        Accepts a CSV body with the header `title,amount,currency,pillar,
+        category,occurred_on[,external_id]`. Defaults to a dry run: pass
+        `dry_run=false` to actually write. Rows are classified individually, so
+        one bad row does not fail the batch. Duplicates are matched on
+        external_id when present, otherwise on date, amount and title.
+        Note: the `currency` column is accepted in the header but not yet applied.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: dry_run
+          in: query
+          required: false
+          description: Defaults to true. Set false to write the rows.
+          schema:
+            type: boolean
+      requestBody:
+        required: true
+        content:
+          text/csv:
+            schema:
+              type: string
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+              required: [file]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExpenseCsvImportResult'
+        '400':
+          description: Malformed CSV, missing required headers, or too many rows
+        '401':
+          description: Unauthorized
+        '413':
+          description: CSV exceeds the size limit
+
+  /v1/expenses/export.csv:
+    get:
+      operationId: exportExpensesCsv
+      tags: [Expenses]
+      summary: Export expenses as CSV
+      description: Returns a UTF-8 CSV with a BOM, ordered by date.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: from
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date
+        - name: to
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: OK
+          content:
+            text/csv:
+              schema:
+                type: string
+        '401':
+          description: Unauthorized
+
   /v1/expenses/import/spreadsheet:
     post:
       operationId: analyzeExpenseSpreadsheet
@@ -10322,6 +10402,39 @@ components:
           nullable: true
       required: [id, title, amount, pillar, frequency, splitMode, userSharePercent]
 
+    ExpenseCsvRowOutcome:
+      type: string
+      enum: [imported, skipped_duplicate, error]
+    ExpenseCsvRowResult:
+      type: object
+      properties:
+        line:
+          type: integer
+          description: 1-based line in the uploaded file, including the header row.
+        outcome:
+          $ref: '#/components/schemas/ExpenseCsvRowOutcome'
+        message:
+          type: string
+          nullable: true
+      required: [line, outcome]
+    ExpenseCsvImportResult:
+      type: object
+      properties:
+        dryRun:
+          type: boolean
+        total:
+          type: integer
+        imported:
+          type: integer
+        skipped:
+          type: integer
+        failed:
+          type: integer
+        rows:
+          type: array
+          items:
+            $ref: '#/components/schemas/ExpenseCsvRowResult'
+      required: [dryRun, total, imported, skipped, failed, rows]
     SpreadsheetImportField:
       type: string
       description: What a spreadsheet column maps to on an expense.

@@ -212,6 +212,9 @@ struct OpenAPIDocsTests {
                 #expect(body.contains("/v1/expenses/partner:"))
                 // norviq-web generates its entire API client from this file, so
                 // an undocumented endpoint is an endpoint the web app cannot call.
+                #expect(body.contains("/v1/expenses/import:"))
+                #expect(body.contains("/v1/expenses/export.csv:"))
+                #expect(body.contains("operationId: importExpensesCsv"))
                 #expect(body.contains("/v1/expenses/import/spreadsheet:"))
                 #expect(body.contains("/v1/expenses/import/spreadsheet/{sessionId}:"))
                 #expect(body.contains("/v1/expenses/import/spreadsheet/{sessionId}/preview:"))
