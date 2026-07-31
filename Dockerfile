@@ -64,8 +64,11 @@ RUN export DEBIAN_FRONTEND=noninteractive DEBCONF_NONINTERACTIVE_SEEN=true \
     tzdata \
     # If your app or its dependencies import FoundationNetworking, also install `libcurl4`.
     # libcurl4 \
-    # If your app or its dependencies import FoundationXML, also install `libxml2`.
-    # libxml2 \
+    # Required: CoreXLSX/XMLCoder (spreadsheet expense import) pull in
+    # FoundationXML, which dynamically links libxml2.so.2. Without this the
+    # binary fails to load at all -- the API never starts. --static-swift-stdlib
+    # does not cover it.
+    libxml2 \
     && rm -r /var/lib/apt/lists/*
 
 # Create a vapor user and group with /app as its home directory

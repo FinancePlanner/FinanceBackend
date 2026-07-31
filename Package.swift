@@ -6,7 +6,7 @@ let sharedPackagePath = ProcessInfo.processInfo.environment["STOCKPLAN_SHARED_PA
 let sharedPackage: Package.Dependency = if let sharedPackagePath {
     .package(path: sharedPackagePath)
 } else {
-    .package(url: "https://github.com/FinancePlanner/norviq-shared.git", exact: "4.2.0")
+    .package(url: "https://github.com/FinancePlanner/norviq-shared.git", exact: "4.4.0")
 }
 
 let sharedPackageIdentity = sharedPackagePath.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "norviq-shared"
@@ -43,6 +43,12 @@ let package = Package(
         // Container packaging without Dockerfile builds in CI.
         .package(url: "https://github.com/apple/swift-container-plugin.git", from: "1.3.0"),
         .package(url: "https://github.com/vapor/apns.git", from: "4.0.0"),
+        // 📊 Reading user-supplied .xlsx workbooks for expense import.
+        // NOTE: these pull in FoundationXML, which dynamically links libxml2.
+        // The runtime image must install it or the binary won't load at all --
+        // see the libxml2 line in Dockerfile.
+        .package(url: "https://github.com/CoreOffice/CoreXLSX.git", from: "0.14.2"),
+        .package(url: "https://github.com/weichsel/ZIPFoundation.git", from: "0.9.20"),
     ],
     targets: [
         .executableTarget(
@@ -66,6 +72,8 @@ let package = Package(
                 .product(name: "Redis", package: "redis"),
                 .product(name: "StockPlanShared", package: sharedPackageIdentity),
                 .product(name: "VaporAPNS", package: "apns"),
+                .product(name: "CoreXLSX", package: "CoreXLSX"),
+                .product(name: "ZIPFoundation", package: "ZIPFoundation"),
             ],
             resources: [
                 .copy("openapi.yaml"),
@@ -83,6 +91,9 @@ let package = Package(
                 .product(name: "VaporTesting", package: "vapor"),
                 .product(name: "StockPlanShared", package: sharedPackageIdentity),
             ],
+            // Loaded from disk via #filePath, not through Bundle, so these are
+            // not build inputs.
+            exclude: ["Fixtures/Spreadsheets"],
             swiftSettings: swiftSettings
         ),
     ],

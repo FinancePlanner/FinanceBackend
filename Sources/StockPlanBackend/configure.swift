@@ -96,6 +96,7 @@ public func configure(_ app: Application) async throws {
         tokenVault: app.tokenEncryptionService
     )
     app.receiptOCRProvider = ReceiptOCRProviderBootstrap.fromEnvironment(app: app)
+    app.spreadsheetAnalysisProvider = SpreadsheetAnalysisProviderBootstrap.fromEnvironment(app: app)
 
     configureBankProviders(app)
     app.marketDataRepository = DatabaseMarketDataRepository()
@@ -302,6 +303,9 @@ public func configure(_ app: Application) async throws {
     ))
     app.lifecycle.use(ScenarioRetentionJob())
     app.lifecycle.use(AIAssistantRetentionJob())
+    // Import sessions hold encrypted spreadsheet contents for an hour;
+    // clients delete on cancel, this guarantees it when they can't.
+    app.lifecycle.use(ExpenseImportRetentionJob())
     app.lifecycle.use(AIDailyTipJob())
     app.lifecycle.use(AdvancedReportWorker(
         gotenbergBaseURL: Environment.get("GOTENBERG_BASE_URL") ?? "http://gotenberg:3000",
