@@ -230,42 +230,12 @@ public func configure(_ app: Application) async throws {
     // OpenAI client; tools execute in-process against the user's own data.
     app.aiChatService = DefaultAIChatService(client: openAIChatClient)
 
-    // Hermes insights (topic/ticker sentiment scraped by the self-hosted Hermes
-    // agent). Reached only over the private Tailscale network; boots disabled
-    // when HERMES_BASE_URL is not configured.
-    let hermesBaseURL = Environment.get("HERMES_BASE_URL")?
-        .trimmingCharacters(in: .whitespacesAndNewlines)
-
-    // DeepAPI insights (real-time financial sentiment from web, X/Twitter, Reddit)
-    // Boots when DEEPAPI_API_KEY is configured.
-    let deepAPIKey = Environment.get("DEEPAPI_API_KEY")?
-        .trimmingCharacters(in: .whitespacesAndNewlines)
-    let deepAPIBaseURL = Environment.get("DEEPAPI_API_BASE_URL")?
-        .trimmingCharacters(in: .whitespacesAndNewlines) ?? "https://deepapi.co"
-
     app.insightsRepository = DatabaseInsightsRepository()
     app.insightsSyncStatus = InsightsSyncStatus()
 
-    // Compose insights provider: prefer Hermes if configured, else DeepAPI, else disabled
-    let insightsProvider: any InsightsProvider
-    if let hermesBaseURL, !hermesBaseURL.isEmpty {
-        app.logger.info("Insights provider: Hermes (Tailscale)")
-        insightsProvider = HermesInsightsProvider(
-            baseURL: hermesBaseURL,
-            apiToken: Environment.get("HERMES_API_TOKEN")?.trimmingCharacters(in: .whitespacesAndNewlines)
-        )
-    } else if let deepAPIKey, !deepAPIKey.isEmpty {
-        app.logger.info("Insights provider: DeepAPI (web + X/Twitter + Reddit)")
-        insightsProvider = DeepAPIInsightsProvider(
-            apiKey: deepAPIKey,
-            baseURL: deepAPIBaseURL,
-            httpClient: app.client,
-            logger: app.logger
-        )
-    } else {
-        app.logger.warning("No insights provider configured (set HERMES_BASE_URL or DEEPAPI_API_KEY)")
-        insightsProvider = DisabledInsightsProvider()
-    }
+    // Hermes (self-hosted, over Tailscale) is primary; DeepAPI takes over when a
+    // Hermes call throws. See makeInsightsProvider for the env contract.
+    let insightsProvider = makeInsightsProvider(app)
     app.insightsProvider = insightsProvider
     // Scraped/pulled ticker set is derived at sync time from users' holdings +
     // watchlist, capped at N. HERMES_TRACKED_TICKERS stays as an optional
