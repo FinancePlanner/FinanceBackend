@@ -2,7 +2,7 @@ name: Deploy to k3s (staging)
 
 # Manual, additive path for the k3s/ArgoCD migration. Does NOT touch the existing
 # VPS docker-compose deploy (deploy.yml). Builds + pushes the image, then writes
-# the tag into norviq-infra apps/api/values-staging.yaml so ArgoCD deploys api to
+# the tag into norviq-infra apps/norviq/api/values-staging.yaml so ArgoCD deploys api to
 # the k3s staging namespace. Production is promoted via norviq-infra's promote
 # workflow once staging is verified.
 
@@ -57,18 +57,18 @@ jobs:
       - name: Checkout norviq-infra
         uses: actions/checkout@v4
         with:
-          repository: FinancePlanner/norviq-infra
-          token: ${{ secrets.INFRA_TOKEN }} # PAT with contents:write on norviq-infra
+          repository: LuminaVault/LuminaVaultInfra
+          token: ${{ secrets.INFRA_TOKEN }} # PAT with contents:write on LuminaVaultInfra
           ref: main
       - name: Install yq
         run: sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 && sudo chmod +x /usr/local/bin/yq
       - name: Write staging image tag
-        run: yq -i ".image.tag = \"${{ needs.build.outputs.sha_tag }}\"" apps/api/values-staging.yaml
+        run: yq -i ".image.tag = \"${{ needs.build.outputs.sha_tag }}\"" apps/norviq/api/values-staging.yaml
       - name: Commit and push
         run: |
           git config user.name "norviq-backend-ci"
           git config user.email "ci@norviq.org"
           if git diff --quiet; then echo "no tag change"; exit 0; fi
-          git add apps/api/values-staging.yaml
+          git add apps/norviq/api/values-staging.yaml
           git commit -m "chore(api): bump k3s staging image to ${{ needs.build.outputs.sha_tag }}"
           git push origin main
