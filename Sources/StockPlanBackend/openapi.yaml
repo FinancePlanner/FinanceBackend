@@ -5587,6 +5587,116 @@ paths:
         '409':
           description: Action already handled
 
+  /v1/ai/credentials:
+    get:
+      operationId: listAICredentials
+      tags: [AI]
+      summary: List the caller's stored LLM provider credentials
+      description: >
+        Never returns the API key itself. Requires a first-party session; a
+        personal access token is rejected with 403.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Stored credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserAIProviderCredentialListResponse'
+        '403':
+          description: Personal access tokens may not manage credentials
+        '503':
+          description: Bring-your-own-key is disabled
+    post:
+      operationId: createAICredential
+      tags: [AI]
+      summary: Store or replace an LLM provider credential
+      description: >
+        Upserts on (user, provider), so re-submitting rotates the key rather
+        than conflicting. The plaintext key is never echoed back: the caller
+        supplied it and already has a copy.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUserAIProviderCredentialRequest'
+      responses:
+        '200':
+          description: Existing credential replaced
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserAIProviderCredential'
+        '201':
+          description: Credential stored
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserAIProviderCredential'
+        '400':
+          description: >
+            Invalid provider, label, or key; or a baseURL that is not https or
+            resolves to a private, loopback, or link-local host.
+        '403':
+          description: Personal access tokens may not manage credentials
+        '503':
+          description: Bring-your-own-key is disabled
+
+  /v1/ai/credentials/{credentialId}/verify:
+    post:
+      operationId: verifyAICredential
+      tags: [AI]
+      summary: Re-check a stored credential against its provider
+      description: >
+        Returns 200 even when the key is rejected — the check itself succeeded.
+        Inspect `status` and `errorCode` for the outcome.
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: credentialId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Verification result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerifyUserAIProviderCredentialResponse'
+        '403':
+          description: Personal access tokens may not manage credentials
+        '404':
+          description: Credential not found
+
+  /v1/ai/credentials/{credentialId}:
+    delete:
+      operationId: deleteAICredential
+      tags: [AI]
+      summary: Delete a stored credential
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: credentialId
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Deleted
+        '403':
+          description: Personal access tokens may not manage credentials
+        '404':
+          description: Credential not found
+
   /v1/ai/insights/expenses:
     get:
       operationId: aiInsightsExpenses
@@ -8115,6 +8225,113 @@ components:
       name: Authorization
       description: Shared secret for inbound RevenueCat webhook delivery. Configure the backend with `REVENUECAT_WEBHOOK_SECRET`.
   schemas:
+    UserAIProviderKind:
+      type: string
+      description: >
+        Which upstream a user key talks to. `compatible` is any
+        OpenAI-compatible endpoint and requires baseURL and defaultModel.
+        Anthropic is reached through its OpenAI-compatible Chat Completions
+        endpoint, not the native Messages API.
+      enum: [anthropic, openai, compatible]
+    UserAIProviderCredentialStatus:
+      type: string
+      enum: [unverified, active, invalid, disabled]
+    UserAIProviderCredential:
+      type: object
+      description: >
+        A stored provider credential. Deliberately has no apiKey field — the
+        plaintext is never returned after it is submitted.
+      required: [id, provider, label, keyHint, status, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        provider:
+          $ref: '#/components/schemas/UserAIProviderKind'
+        label:
+          type: string
+        keyHint:
+          type: string
+          description: Last four characters of the key, for telling two apart.
+        baseURL:
+          type: string
+          nullable: true
+        defaultModel:
+          type: string
+          nullable: true
+        status:
+          $ref: '#/components/schemas/UserAIProviderCredentialStatus'
+        lastVerifiedAt:
+          type: string
+          format: date-time
+          nullable: true
+        lastUsedAt:
+          type: string
+          format: date-time
+          nullable: true
+        lastErrorCode:
+          type: string
+          nullable: true
+          description: Stable code, never provider error text.
+          enum: [invalid_key, restricted, rate_limited, unreachable]
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    UserAIProviderCredentialListResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/UserAIProviderCredential'
+    CreateUserAIProviderCredentialRequest:
+      type: object
+      required: [provider, label, apiKey]
+      properties:
+        provider:
+          $ref: '#/components/schemas/UserAIProviderKind'
+        label:
+          type: string
+          minLength: 1
+          maxLength: 100
+        apiKey:
+          type: string
+          minLength: 1
+          maxLength: 512
+          description: Plaintext key. Stored encrypted and never returned.
+        baseURL:
+          type: string
+          nullable: true
+          description: Required for `compatible`. Must be https and must not resolve to a private, loopback, or link-local host.
+        defaultModel:
+          type: string
+          nullable: true
+          description: Required for `compatible`.
+        verify:
+          type: boolean
+          default: true
+          description: Check the key against the provider before responding.
+    VerifyUserAIProviderCredentialResponse:
+      type: object
+      required: [status, detail, latencyMs]
+      properties:
+        status:
+          $ref: '#/components/schemas/UserAIProviderCredentialStatus'
+        verifiedAt:
+          type: string
+          format: date-time
+          nullable: true
+        errorCode:
+          type: string
+          nullable: true
+        detail:
+          type: string
+        latencyMs:
+          type: integer
     RebalancingDocument:
       type: object
       description: Rebalancing contract defined in the versioned StockPlanShared package.

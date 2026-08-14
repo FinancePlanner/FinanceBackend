@@ -212,6 +212,33 @@ protocol OpenAIChatClient: Sendable {
     ) async throws -> OpenAIMessage
 }
 
+/// A non-200 from the chat provider, carrying the status so callers can tell an
+/// auth failure apart from an outage.
+///
+/// Conforms to `AbortError` with the same `.badGateway` and message this used to
+/// throw directly, so every existing caller behaves exactly as before. Only code
+/// that explicitly inspects `status` sees anything new.
+struct OpenAIChatUpstreamError: AbortError {
+    /// The status the provider actually returned.
+    let upstreamStatus: UInt
+
+    var reason: String {
+        "AI service is unavailable. Please try again later."
+    }
+
+    var status: HTTPResponseStatus {
+        .badGateway
+    }
+
+    var isAuthFailure: Bool {
+        upstreamStatus == 401 || upstreamStatus == 403
+    }
+
+    var isRateLimit: Bool {
+        upstreamStatus == 429
+    }
+}
+
 struct DefaultOpenAIChatClient: OpenAIChatClient {
     let apiKey: String
     let model: String
@@ -243,8 +270,11 @@ struct DefaultOpenAIChatClient: OpenAIChatClient {
 
         guard response.status == .ok else {
             let bodyText = response.body.map { String(buffer: $0) } ?? ""
-            req.logger.error("openai_error status=\(response.status.code) body=\(bodyText.prefix(500))")
-            throw Abort(.badGateway, reason: "AI service is unavailable. Please try again later.")
+            // Redacted when the provider echoes the key back in its error body,
+            // which matters now that the key can be a user's own.
+            let safeBody = bodyText.contains(apiKey) ? "<redacted: contained the key>" : String(bodyText.prefix(500))
+            req.logger.error("openai_error status=\(response.status.code) body=\(safeBody)")
+            throw OpenAIChatUpstreamError(upstreamStatus: response.status.code)
         }
 
         let decoded = try response.content.decode(OpenAIChatResponseBody.self)

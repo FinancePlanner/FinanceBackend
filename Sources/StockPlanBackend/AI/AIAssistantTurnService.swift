@@ -183,13 +183,19 @@ extension AIAssistantController {
         else { throw Abort(.notFound) }
         let content = try req.content.decode(ChatPayload.self).content.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !content.isEmpty, content.count <= 12000 else { throw Abort(.badRequest, reason: "Message must contain 1 to 12,000 characters.") }
-        try await consumeAssistantTurn(userId: userId, req: req)
+        // Resolved before the quota check on purpose: a user paying for their
+        // own inference must not also spend a Norviq turn from the free-tier
+        // cap. The global kill switch and the route rate limit still apply.
+        let resolved = try await AIAssistantClientResolver.resolve(userId: userId, on: req)
+        if !resolved.usesOwnKey {
+            try await consumeAssistantTurn(userId: userId, req: req)
+        }
         let userMessage = try AIAssistantMessage(conversationId: id, userId: userId, role: AIAssistantRole.user.rawValue,
                                                  contentEncrypted: req.userPIIEncryptionService.encryptString(content))
         try await userMessage.create(on: req.db)
 
-        let result = try await AIAssistantTurnService(client: req.application.openAIChatClient)
-            .generate(userId: userId, conversation: conversation, userMessage: content, req: req)
+        let result = try await Self.runTurn(resolved: resolved, userId: userId,
+                                            conversation: conversation, content: content, req: req)
         let assistantMessage = try AIAssistantMessage(conversationId: id, userId: userId, role: AIAssistantRole.assistant.rawValue,
                                                       contentEncrypted: req.userPIIEncryptionService.encryptString(result.text))
         conversation.expiresAt = Date().addingTimeInterval(30 * 86400)
@@ -240,6 +246,57 @@ extension AIAssistantController {
         let body = AIConfirmedActionResponse(actionId: id.uuidString, status: .completed,
                                              resultId: result.id?.uuidString, message: result.message)
         let response = Response(status: .ok); try response.content.encode(body, as: .json); return response
+    }
+
+    /// Runs one turn with whichever client the resolver picked.
+    ///
+    /// On a user's own key, an upstream auth failure is translated into a typed
+    /// `AIUserCredentialFailure` and recorded on the credential, so the settings
+    /// page can show "key rejected" without the user having to hit Test. When
+    /// running on Norviq's key the error passes through untouched.
+    private static func runTurn(
+        resolved: ResolvedAssistantClient,
+        userId: UUID,
+        conversation: AIConversation,
+        content: String,
+        req: Request
+    ) async throws -> AIAssistantTurnService.Result {
+        // The kill switch normally runs inside consumeAssistantTurn, which a
+        // BYO turn skips — so apply it here too. Bringing your own key does not
+        // opt you out of Norviq's own controls.
+        if resolved.usesOwnKey {
+            try AICostControls.requireEnabled(reason: "The assistant is temporarily unavailable.")
+        }
+
+        do {
+            let result = try await AIAssistantTurnService(client: resolved.client)
+                .generate(userId: userId, conversation: conversation, userMessage: content, req: req)
+            if let credential = resolved.credential {
+                await AIAssistantClientResolver.recordSuccess(credential, on: req)
+            }
+            return result
+        } catch let upstream as OpenAIChatUpstreamError {
+            guard let credential = resolved.credential, let id = credential.id else { throw upstream }
+
+            let failure: AIUserCredentialFailure = if upstream.isAuthFailure {
+                .rejected(provider: credential.provider, credentialId: id)
+            } else if upstream.isRateLimit {
+                .rateLimited(provider: credential.provider, credentialId: id)
+            } else {
+                .unreachable(provider: credential.provider, credentialId: id)
+            }
+            await AIAssistantClientResolver.recordFailure(credential, failure: failure, on: req)
+
+            // Falling back would quietly move the bill to Norviq and hide a
+            // credential the user asked us to use, so it is off by default.
+            if AICredentialSettings.fallbackToNorviqKey {
+                req.logger.warning("ai_credential_fallback provider=\(credential.provider)")
+                return try await AIAssistantTurnService(client: req.application.openAIChatClient)
+                    .generate(userId: userId, conversation: conversation, userMessage: content, req: req)
+            }
+            // 424 reads exactly right: your upstream dependency failed, not ours.
+            throw Abort(.failedDependency, reason: failure.userFacingMessage)
+        }
     }
 
     private func consumeAssistantTurn(userId: UUID, req: Request) async throws {
