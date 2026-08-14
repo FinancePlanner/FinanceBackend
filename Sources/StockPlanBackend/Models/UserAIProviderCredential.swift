@@ -75,27 +75,27 @@ final class UserAIProviderCredential: Model, @unchecked Sendable {
     @Field(key: "key_fingerprint")
     var keyFingerprint: String
 
-    @Field(key: "base_url")
+    @OptionalField(key: "base_url")
     var baseURL: String?
 
-    @Field(key: "default_model")
+    @OptionalField(key: "default_model")
     var defaultModel: String?
 
     @Field(key: "status")
     var status: String
 
-    @Field(key: "last_verified_at")
+    @OptionalField(key: "last_verified_at")
     var lastVerifiedAt: Date?
 
-    @Field(key: "last_used_at")
+    @OptionalField(key: "last_used_at")
     var lastUsedAt: Date?
 
     /// A stable code (`invalid_key`, `rate_limited`, `unreachable`) and never
     /// provider error text, which can echo the submitted key back at us.
-    @Field(key: "last_error_code")
+    @OptionalField(key: "last_error_code")
     var lastErrorCode: String?
 
-    @Field(key: "last_error_at")
+    @OptionalField(key: "last_error_at")
     var lastErrorAt: Date?
 
     @Timestamp(key: "created_at", on: .create)
