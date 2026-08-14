@@ -1,9 +1,18 @@
 name: CI
 
 on:
+  # main is deliberately NOT excluded here.
+  #
+  # It used to be, on the assumption that the PR run covers whatever reaches
+  # main. That assumption broke: a PR merged while its branch had newer fixes
+  # that were not in the PR head, and main sat not compiling
+  # (NewsSyncJob.swift calling a method that does not exist) with nothing to
+  # catch it — the next deploy would have failed at image build.
+  #
+  # Feature branches already run twice (push + pull_request), so dropping the
+  # exclusion changes nothing for them and closes the gap on the one branch
+  # that actually ships.
   push:
-    branches-ignore:
-      - main
     paths:
       - 'Sources/**'
       - 'Tests/**'
