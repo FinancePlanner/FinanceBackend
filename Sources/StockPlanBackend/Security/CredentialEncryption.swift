@@ -8,6 +8,8 @@ enum CredentialContext: String, Sendable, CaseIterable {
     case broker
     case bankPlaid = "bank_plaid"
     case bankGoCardless = "bank_gocardless"
+    /// User-supplied LLM provider API keys (bring-your-own-key).
+    case aiProvider = "ai_provider"
 
     var authenticatedData: String {
         "norviq.credential.\(rawValue)"

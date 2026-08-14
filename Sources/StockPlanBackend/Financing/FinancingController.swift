@@ -164,7 +164,10 @@ struct FinancingController: RouteCollection {
         return value
     }
 
+    /// Delegates to the shared guard so there is one copy of the blocked-host
+    /// list. Bring-your-own-key needs the same check on a user-supplied base
+    /// URL, and two drifting copies of an SSRF filter is how one gets missed.
     private static func blockedHost(_ host: String) -> Bool {
-        host == "localhost" || host.hasSuffix(".local") || host == "0.0.0.0" || host == "127.0.0.1" || host == "::1" || host.hasPrefix("10.") || host.hasPrefix("192.168.") || host.hasPrefix("169.254.") || (host.hasPrefix("172.") && (16 ... 31).contains(Int(host.split(separator: ".").dropFirst().first ?? "") ?? -1))
+        OutboundURLGuard.isBlockedHost(host)
     }
 }

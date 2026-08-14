@@ -38,6 +38,29 @@ struct CredentialEncryptionTests {
         }
     }
 
+    @Test("AI provider keys round-trip under their own context")
+    func aiProviderRoundtrip() throws {
+        let vault = makeVault()
+        let stored = try vault.encrypt("sk-ant-api03-secret", context: .aiProvider)
+
+        #expect(vault.isEncrypted(stored))
+        #expect(!stored.contains("sk-ant-api03-secret"))
+        #expect(try vault.decrypt(stored, context: .aiProvider) == "sk-ant-api03-secret")
+    }
+
+    @Test("A broker ciphertext cannot be opened as an AI provider key")
+    func aiProviderContextBinding() throws {
+        let vault = makeVault()
+        let stored = try vault.encrypt("broker-token", context: .broker)
+
+        do {
+            _ = try vault.decrypt(stored, context: .aiProvider)
+            #expect(Bool(false))
+        } catch {
+            #expect(Bool(true))
+        }
+    }
+
     @Test("Legacy plaintext values pass through decrypt unchanged")
     func legacyPlaintextPassthrough() throws {
         let vault = makeVault()
