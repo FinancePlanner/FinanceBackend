@@ -27,6 +27,104 @@ struct BudgetingEngineService {
         return calculate(snapshot: snapshot, items: items, expenses: expenses)
     }
 
+    func spendToUnits(userId: UUID) async throws -> SpendToUnitsCapacity {
+        let user = try await User.find(userId, on: req.db)
+        let preference = user.flatMap(\.dcaSymbol).flatMap(SpendToUnitsMath.normalizeSymbol)
+        let holding = try await largestHoldingSymbol(userId: userId)
+        let resolved: (symbol: String, source: SpendToUnitsSource) = {
+            if let preference {
+                return (preference, .preference)
+            }
+            if let holding {
+                return (holding, .largestHolding)
+            }
+            return (SpendToUnitsMath.defaultSymbol, .default)
+        }()
+
+        let monthStart = monthRange(containing: Date()).start
+        var surplus = 0.0
+        var currency = "EUR"
+        var categories: [SpendToUnitsCategory] = []
+        if let snapshot = try await snapshot(userId: userId, monthStart: monthStart, on: req.db),
+           let snapshotId = snapshot.id
+        {
+            let drift = try await dashboard(userId: userId, snapshotId: snapshotId)
+            surplus = SpendToUnitsMath.surplus(
+                investmentContributionTarget: drift.investmentContributionTarget,
+                lostInvestmentCapital: drift.lostInvestmentCapital,
+                totalTarget: drift.totalTarget,
+                totalActual: drift.totalActual
+            )
+            currency = drift.currencyCode
+            categories = drift.categories
+                .filter { $0.allocationKind == .expense && $0.driftAmount > 0 }
+                .prefix(5)
+                .map { SpendToUnitsCategory(title: $0.title, overspendAmount: $0.driftAmount, units: nil) }
+        }
+
+        let quote = try? await req.application.marketDataService.quote(symbol: resolved.symbol, on: req)
+        let price = quote.flatMap { $0.currentPrice > 0 ? $0.currentPrice : nil }
+        let quoteDate = quote.map { Date(timeIntervalSince1970: $0.timestamp) }
+        let stale: Bool = {
+            guard let quoteDate else { return price == nil }
+            return Date().timeIntervalSince(quoteDate) > SpendToUnitsMath.staleQuoteSeconds
+        }()
+        let asOf = quoteDate.map { ISO8601DateFormatter().string(from: $0) }
+
+        return SpendToUnitsCapacity(
+            symbol: resolved.symbol,
+            resolvedFrom: resolved.source,
+            price: price,
+            priceCurrency: quote?.currency,
+            quoteAsOf: asOf,
+            quoteStale: stale,
+            surplusAmount: surplus,
+            surplusUnits: SpendToUnitsMath.units(amount: surplus, price: price),
+            currencyCode: currency,
+            categories: categories.map {
+                SpendToUnitsCategory(
+                    title: $0.title,
+                    overspendAmount: $0.overspendAmount,
+                    units: SpendToUnitsMath.units(amount: $0.overspendAmount, price: price)
+                )
+            }
+        )
+    }
+
+    func updateDcaSymbol(userId: UUID, symbol: String) async throws -> SpendToUnitsCapacity {
+        guard let normalized = SpendToUnitsMath.normalizeSymbol(symbol) else {
+            throw Abort(.badRequest, reason: "Choose a ticker like VWCE or IWDA.")
+        }
+        guard let user = try await User.find(userId, on: req.db) else {
+            throw Abort(.unauthorized, reason: "User not found")
+        }
+        user.dcaSymbol = normalized
+        try await user.update(on: req.db)
+        return try await spendToUnits(userId: userId)
+    }
+
+    private func largestHoldingSymbol(userId: UUID) async throws -> String? {
+        let holdings = try await Stock.query(on: req.db).filter(\.$userId == userId).all()
+        guard !holdings.isEmpty else { return nil }
+        let ranked = Dictionary(grouping: holdings, by: \.symbol).compactMap { symbol, rows -> (String, Double, Int)? in
+            let value = rows.reduce(0) { $0 + $1.shares * $1.buyPrice }
+            guard value > 0 else { return nil }
+            let rank = switch rows.first?.category {
+            case .etf: 0
+            case .mutualFund: 1
+            case .stock: 2
+            default: 3
+            }
+            return (symbol, value, rank)
+        }
+        return ranked.max { lhs, rhs in
+            if lhs.2 != rhs.2 {
+                return lhs.2 > rhs.2
+            }
+            return lhs.1 < rhs.1
+        }?.0
+    }
+
     func discipline(userId: UUID, through: Date, months: Int) async throws -> BudgetDisciplineSummary {
         let boundedMonths = min(max(months, 1), 24)
         let throughStart = monthRange(containing: through).start

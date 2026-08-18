@@ -10,6 +10,8 @@ struct BudgetingEngineController: RouteCollection {
         let read = budget.grouped(ScopeRequirementMiddleware(.expensesRead))
         let write = budget.grouped(ScopeRequirementMiddleware(.expensesWrite))
         read.get("snapshots", ":snapshotId", "drift", use: drift)
+        read.get("dca-capacity", use: dcaCapacity)
+        write.put("dca-capacity", use: updateDcaCapacity)
         read.get("discipline", use: discipline)
         write.put("snapshots", ":snapshotId", "alert-policy", use: updatePolicy)
         write.patch("snapshots", ":snapshotId", "items", use: bulkUpdate)
@@ -26,6 +28,17 @@ struct BudgetingEngineController: RouteCollection {
     @Sendable func drift(req: Request) async throws -> BudgetDriftDashboard {
         let user = try req.auth.require(SessionToken.self).userId
         return try await BudgetingEngineService(req: req).dashboard(userId: user, snapshotId: id(req, "snapshotId"))
+    }
+
+    @Sendable func dcaCapacity(req: Request) async throws -> SpendToUnitsCapacity {
+        let user = try req.auth.require(SessionToken.self).userId
+        return try await BudgetingEngineService(req: req).spendToUnits(userId: user)
+    }
+
+    @Sendable func updateDcaCapacity(req: Request) async throws -> SpendToUnitsCapacity {
+        let user = try req.auth.require(SessionToken.self).userId
+        let payload = try req.content.decode(UpdateDcaSymbolRequest.self)
+        return try await BudgetingEngineService(req: req).updateDcaSymbol(userId: user, symbol: payload.symbol)
     }
 
     @Sendable func discipline(req: Request) async throws -> BudgetDisciplineSummary {

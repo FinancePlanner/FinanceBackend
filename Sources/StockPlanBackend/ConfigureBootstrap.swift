@@ -291,6 +291,7 @@ func registerMigrations(_ app: Application) {
     app.migrations.add(CreateBankLinkFlow())
     app.migrations.add(CreateExpenseImportSessions())
     app.migrations.add(CreateUserAIProviderCredentials())
+    app.migrations.add(AddDcaSymbolToUsers())
 }
 
 func envBool(_ key: String, default defaultValue: Bool) -> Bool {

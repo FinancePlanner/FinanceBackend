@@ -65,6 +65,9 @@ final class User: Model, Authenticatable, @unchecked Sendable {
     @OptionalField(key: "trial_warning_sent_at")
     var trialWarningSentAt: Date?
 
+    @OptionalField(key: "dca_symbol")
+    var dcaSymbol: String?
+
     @Timestamp(key: "created_at", on: .create)
     var createdAt: Date?
 

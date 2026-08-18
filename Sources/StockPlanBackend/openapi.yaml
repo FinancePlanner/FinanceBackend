@@ -4048,6 +4048,36 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/BudgetDriftDashboard' }
 
+  /v1/budget/dca-capacity:
+    get:
+      operationId: getDcaCapacity
+      tags: [Expenses]
+      summary: Convert leftover budget into units of the user's DCA holding
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Spend-to-units capacity
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SpendToUnitsCapacity' }
+    put:
+      operationId: updateDcaCapacity
+      tags: [Expenses]
+      summary: Set the ticker used to express leftover spend as units
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateDcaSymbolRequest' }
+      responses:
+        '200':
+          description: Updated spend-to-units capacity
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SpendToUnitsCapacity' }
+        '400': { description: Invalid ticker }
+
   /v1/budget/snapshots/{snapshotId}/alert-policy:
     parameters:
       - { name: snapshotId, in: path, required: true, schema: { type: string, format: uuid } }
@@ -10293,6 +10323,42 @@ components:
           type: array
           items: { $ref: '#/components/schemas/BudgetCategoryDrift' }
       required: [snapshotId, monthStart, currencyCode, revision, totalTarget, totalActual, totalDriftAmount, totalLevel, investmentContributionTarget, lostInvestmentCapital, categories]
+
+    SpendToUnitsSource:
+      type: string
+      enum: [preference, largestHolding, default]
+
+    SpendToUnitsCategory:
+      type: object
+      properties:
+        title: { type: string }
+        overspendAmount: { type: number, format: double }
+        units: { type: number, format: double, nullable: true }
+      required: [title, overspendAmount]
+
+    SpendToUnitsCapacity:
+      type: object
+      properties:
+        symbol: { type: string }
+        resolvedFrom: { $ref: '#/components/schemas/SpendToUnitsSource' }
+        price: { type: number, format: double, nullable: true }
+        priceCurrency: { type: string, nullable: true }
+        quoteAsOf: { type: string, nullable: true }
+        quoteStale: { type: boolean }
+        surplusAmount: { type: number, format: double }
+        surplusUnits: { type: number, format: double, nullable: true }
+        currencyCode: { type: string }
+        categories:
+          type: array
+          items: { $ref: '#/components/schemas/SpendToUnitsCategory' }
+        disclaimer: { type: string }
+      required: [symbol, resolvedFrom, quoteStale, surplusAmount, currencyCode, categories, disclaimer]
+
+    UpdateDcaSymbolRequest:
+      type: object
+      properties:
+        symbol: { type: string }
+      required: [symbol]
 
     BudgetDisciplineMonth:
       type: object
