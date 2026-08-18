@@ -236,6 +236,8 @@ extension ReportSuggestionCategory: @retroactive Content {}
 extension ReportSuggestionResponse: @retroactive Content {}
 extension ReportSuggestionsResponse: @retroactive Content {}
 extension BudgetDriftDashboard: @retroactive Content {}
+extension SpendToUnitsCapacity: @retroactive Content {}
+extension UpdateDcaSymbolRequest: @retroactive Content {}
 extension BudgetDisciplineSummary: @retroactive Content {}
 extension BudgetAlertPolicy: @retroactive Content {}
 extension BudgetReallocationPreviewRequest: @retroactive Content {}

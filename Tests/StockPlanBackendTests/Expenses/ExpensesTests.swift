@@ -1054,4 +1054,67 @@ struct ExpensesTests {
             })
         }
     }
+
+    @Test("DCA capacity persists a ticker and reports leftover spend as units when a quote exists")
+    func dcaCapacityPersistsSymbol() async throws {
+        try await withExpensesApp { app in
+            let token = try await registerTestUser(app: app)
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+            let monthStart = try #require(calendar.date(from: DateComponents(year: 2026, month: 8, day: 1)))
+            let user = try #require(try await User.query(on: app.db).first())
+            let userId = try user.requireID()
+            let snapshot = BudgetSnapshot(
+                userID: userId,
+                monthStart: monthStart,
+                netSalary: 4000,
+                targetShares: [:],
+                currencyCode: "EUR"
+            )
+            try await snapshot.create(on: app.db)
+            let snapshotId = try snapshot.requireID()
+            try await BudgetPlanItem(
+                snapshotID: snapshotId,
+                userID: userId,
+                title: "Monthly Investments",
+                plannedAmount: 500,
+                pillar: .futureYou,
+                allocationKind: .investmentContribution
+            ).create(on: app.db)
+            try await BudgetPlanItem(
+                snapshotID: snapshotId,
+                userID: userId,
+                title: "Dining Out",
+                plannedAmount: 150,
+                pillar: .fun
+            ).create(on: app.db)
+            try await Expense(
+                userID: userId,
+                title: "Dining Out",
+                amount: 210,
+                pillar: .fun,
+                occurredOn: #require(calendar.date(from: DateComponents(year: 2026, month: 8, day: 12)))
+            ).create(on: app.db)
+
+            try await app.testing().test(.PUT, "v1/budget/dca-capacity", beforeRequest: { req in
+                req.headers.bearerAuthorization = .init(token: token)
+                try req.content.encode(UpdateDcaSymbolRequest(symbol: "vwce"))
+            }, afterResponse: { response async throws in
+                #expect(response.status == .ok)
+                let capacity = try response.content.decode(SpendToUnitsCapacity.self)
+                #expect(capacity.symbol == "VWCE")
+                #expect(capacity.resolvedFrom == .preference)
+                #expect(capacity.surplusAmount == 440)
+                #expect(capacity.disclaimer.contains("Not an order"))
+                #expect(capacity.categories.contains { $0.title == "Dining Out" && $0.overspendAmount == 60 })
+            })
+
+            try await app.testing().test(.PUT, "v1/budget/dca-capacity", beforeRequest: { req in
+                req.headers.bearerAuthorization = .init(token: token)
+                try req.content.encode(UpdateDcaSymbolRequest(symbol: "nope!"))
+            }, afterResponse: { response async throws in
+                #expect(response.status == .badRequest)
+            })
+        }
+    }
 }
