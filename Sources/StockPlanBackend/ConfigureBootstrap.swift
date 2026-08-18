@@ -244,6 +244,9 @@ func registerMigrations(_ app: Application) {
     app.migrations.add(AddHouseholdPartnerDisplayNameToUsers())
     app.migrations.add(AddEncryptedUserProfileFields())
     app.migrations.add(AddTrialFields())
+    // Must exist before BackfillEncryptedUserProfileFields: that job loads the
+    // current User model, which now selects dca_symbol.
+    app.migrations.add(AddDcaSymbolToUsers())
     app.migrations.add(BackfillEncryptedUserProfileFields())
     app.migrations.add(CreateUserActivity())
     app.migrations.add(AddNewsViewedActivityType())
@@ -291,7 +294,6 @@ func registerMigrations(_ app: Application) {
     app.migrations.add(CreateBankLinkFlow())
     app.migrations.add(CreateExpenseImportSessions())
     app.migrations.add(CreateUserAIProviderCredentials())
-    app.migrations.add(AddDcaSymbolToUsers())
 }
 
 func envBool(_ key: String, default defaultValue: Bool) -> Bool {
