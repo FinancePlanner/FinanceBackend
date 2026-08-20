@@ -6,6 +6,19 @@ struct MarketDataProviderDisabledError: AbortError {
     let reason = "Market data provider is disabled."
 }
 
+/// No configured provider could price this symbol — the primary returned an
+/// empty quote and the FMP fallback had nothing (or is not licensed for it).
+///
+/// Distinct from `MarketDataProviderDisabledError`: the provider may be perfectly
+/// healthy and simply not cover the symbol, which is the common case for non-US
+/// listings on Finnhub. Composite endpoints that must not fail a whole screen
+/// catch this and degrade, the way they already do for the disabled provider.
+struct MarketQuoteUnavailableError: AbortError {
+    let symbol: String
+    let status: HTTPResponseStatus = .notFound
+    var reason: String { "No quote is available for \(symbol)." }
+}
+
 struct DisabledMarketDataProvider: MarketDataProvider {
     var name: String {
         "disabled"

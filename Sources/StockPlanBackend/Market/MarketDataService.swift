@@ -232,7 +232,7 @@ struct DefaultMarketDataService: MarketDataService {
                 if let existing {
                     return makeQuoteResponse(from: existing)
                 }
-                throw Abort(.notFound, reason: "No quote is available for \(symbol).")
+                throw MarketQuoteUnavailableError(symbol: symbol)
             }
 
             let cache = try await upsertQuoteCache(fresh, provider: providerName, on: req.db)
@@ -2448,6 +2448,13 @@ extension DefaultMarketDataService {
     func mapProviderError(_ error: any Error, operation: String) -> any Error {
         if error is MarketDataProviderDisabledError {
             return MarketDataProviderDisabledError()
+        }
+
+        // Preserve the concrete type; the generic AbortError re-wrap below would
+        // flatten it to a plain Abort and composite endpoints could no longer
+        // tell "we cannot price this symbol" apart from any other 404.
+        if let unavailable = error as? MarketQuoteUnavailableError {
+            return unavailable
         }
 
         // Preserve the Retry-After header; the generic AbortError re-wrap below

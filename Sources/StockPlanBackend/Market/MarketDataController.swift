@@ -108,13 +108,23 @@ struct MarketDataController: RouteCollection {
                 changePercent: changePercent
             )
         } catch is MarketDataProviderDisabledError {
-            return StockDetailsResponse(
-                symbol: symbol.uppercased(),
-                company: symbol.uppercased(),
-                latestPrice: 0,
-                changePercent: 0
-            )
+            return zeroedDetails(for: symbol)
+        } catch is MarketQuoteUnavailableError {
+            // Same graceful degradation as a disabled provider: this endpoint backs a
+            // whole screen, so an unpriceable symbol must not fail the entire response.
+            // `GET /market/quote/:symbol` still answers 404 for the same case, because
+            // there a fabricated 0.00 would be the only thing the caller receives.
+            return zeroedDetails(for: symbol)
         }
+    }
+
+    private func zeroedDetails(for symbol: String) -> StockDetailsResponse {
+        StockDetailsResponse(
+            symbol: symbol.uppercased(),
+            company: symbol.uppercased(),
+            latestPrice: 0,
+            changePercent: 0
+        )
     }
 
     @Sendable
