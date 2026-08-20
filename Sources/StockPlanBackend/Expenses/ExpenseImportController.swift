@@ -210,9 +210,19 @@ struct ExpenseImportController: RouteCollection {
 
     /// Client-supplied and echoed back to the client, so strip path separators
     /// and control characters rather than trusting it.
+    ///
+    /// Built from a CharacterSet rather than a regex on purpose. The previous
+    /// pattern was written as "[/\\\\\\u{0}-\\u{1F}]", where `\\u{0}` collapses to
+    /// the literal characters `\u{0}` instead of a control character, so the class
+    /// never meant what it read as and stripped every filename down to nothing —
+    /// leaving every upload named "spreadsheet.xlsx".
+    private static let disallowedFilenameCharacters = CharacterSet(charactersIn: "/\\")
+        .union(.controlCharacters)
+
     private func sanitize(_ raw: String) -> String {
         let cleaned = raw
-            .replacingOccurrences(of: "[/\\\\\\u{0}-\\u{1F}]", with: "", options: .regularExpression)
+            .components(separatedBy: Self.disallowedFilenameCharacters)
+            .joined()
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return cleaned.isEmpty ? "spreadsheet.xlsx" : String(cleaned.prefix(255))
     }
