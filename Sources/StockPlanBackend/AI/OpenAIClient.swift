@@ -1,4 +1,5 @@
 import Foundation
+import NIOCore
 import Vapor
 
 // MARK: - Wire models (OpenAI Chat Completions API)
@@ -237,6 +238,12 @@ struct OpenAIChatUpstreamError: AbortError {
     var isRateLimit: Bool {
         upstreamStatus == 429
     }
+
+    /// The account reached zero balance. OpenRouter returns 402 for this, and it
+    /// is the case the fallback chain exists for, so it gets its own name.
+    var isOutOfCredits: Bool {
+        upstreamStatus == 402
+    }
 }
 
 struct DefaultOpenAIChatClient: OpenAIChatClient {
@@ -244,6 +251,17 @@ struct DefaultOpenAIChatClient: OpenAIChatClient {
     let model: String
     let baseURL: String
     let maxTokens: Int
+    /// Without this a hung provider blocks the request forever, which also means
+    /// a fallback chain in front of it never gets to demote.
+    let timeout: TimeAmount
+
+    init(apiKey: String, model: String, baseURL: String, maxTokens: Int, timeout: TimeAmount = .seconds(60)) {
+        self.apiKey = apiKey
+        self.model = model
+        self.baseURL = baseURL
+        self.maxTokens = maxTokens
+        self.timeout = timeout
+    }
 
     func chat(
         messages: [OpenAIMessage],
@@ -265,6 +283,7 @@ struct DefaultOpenAIChatClient: OpenAIChatClient {
         let response = try await req.client.post(uri) { clientReq in
             clientReq.headers.contentType = .json
             clientReq.headers.bearerAuthorization = BearerAuthorization(token: apiKey)
+            clientReq.timeout = timeout
             try clientReq.content.encode(body)
         }
 
@@ -315,19 +334,40 @@ struct DefaultOpenAIChatClient: OpenAIChatClient {
 }
 
 /// Builds the OpenAI-compatible chat client from provider-neutral config.
+///
+/// The result is an ordered chain: the configured primary first, then whatever
+/// `AI_FALLBACK_PROVIDERS` resolves to. With no primary configured the chain is
+/// fallbacks-only, which is what keeps a fresh dev box and staging answering
+/// instead of booting into `DisabledOpenAIChatClient`.
 func makeOpenAIChatClient(_ app: Application) -> any OpenAIChatClient {
     let configuration = AIProviderConfiguration.load()
-    guard configuration.isConfigured else {
+    var tiers: [AIProviderTier] = []
+
+    if configuration.isConfigured {
+        app.logger.notice("ai_provider configured provider=\(configuration.provider.rawValue) model=\(configuration.defaultModel)")
+        tiers.append(AIProviderTier(
+            label: "primary-\(configuration.provider.rawValue)",
+            apiKey: configuration.apiKey,
+            baseURL: configuration.baseURL,
+            model: configuration.defaultModel,
+            maxTokens: configuration.maxTokens,
+            supportsResponseFormat: AIModelCapabilities.supportsResponseFormat(configuration.defaultModel)
+        ))
+    } else {
+        app.logger.warning("AI primary provider key is not configured; falling back to the free chain if one is available.")
+    }
+
+    tiers.append(contentsOf: configuration.fallbacks)
+
+    guard let client = makeFallbackChatClient(
+        tiers: tiers,
+        timeout: configuration.requestTimeout,
+        logger: app.logger
+    ) else {
         app.logger.warning("AI provider key is not configured; AI insights are disabled.")
         return DisabledOpenAIChatClient()
     }
-    app.logger.notice("ai_provider configured provider=\(configuration.provider.rawValue) model=\(configuration.defaultModel)")
-    return DefaultOpenAIChatClient(
-        apiKey: configuration.apiKey,
-        model: configuration.defaultModel,
-        baseURL: configuration.baseURL,
-        maxTokens: configuration.maxTokens
-    )
+    return client
 }
 
 /// Used when no OPENAI_API_KEY is configured. Keeps the app bootable; the feature
