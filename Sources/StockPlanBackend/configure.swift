@@ -252,6 +252,19 @@ public func configure(_ app: Application) async throws {
         pinnedTickers: pinnedTickers
     )
 
+    // Telegram. A missing bot token disables the whole feature: no route is
+    // mounted and no poller runs, so a deployment without one behaves exactly
+    // as it did before the bot existed.
+    let telegramConfiguration = TelegramConfiguration.resolve(
+        TelegramConfiguration.load(),
+        environment: app.environment,
+        logger: app.logger
+    )
+    app.telegramConfiguration = telegramConfiguration
+    if let telegramConfiguration, !telegramConfiguration.usesWebhook {
+        app.lifecycle.use(TelegramPoller(client: TelegramClient(token: telegramConfiguration.botToken)))
+    }
+
     let cleanupIntervalMinutes = Environment.get("AUTH_TOKEN_CLEANUP_INTERVAL_MINUTES").flatMap(Int.init(_:)) ?? 60
     app.lifecycle.use(AuthTokenCleanup(interval: TimeInterval(cleanupIntervalMinutes * 60)))
     app.lifecycle.use(IBKRSyncJob())

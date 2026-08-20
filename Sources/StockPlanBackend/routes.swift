@@ -54,9 +54,16 @@ func routes(_ app: Application) throws {
     try app.register(collection: BankCallbackController())
     try app.register(collection: RevenueCatWebhookController())
     try app.register(collection: SharingController())
+    // Only mounted when a bot token is configured, and it authenticates via a
+    // secret header rather than a session — Telegram cannot present one.
+    if app.telegramConfiguration?.usesWebhook == true {
+        try app.register(collection: TelegramWebhookController())
+    }
+
     // RFC 8414 authorization-server metadata lives at the root well-known path.
     try app.register(collection: WellKnownController())
 
+    try api.register(collection: MessagingController())
     try api.register(collection: AuthController(environment: app.environment))
     try api.register(collection: PersonalAccessTokenController())
     try api.register(collection: TokenIntrospectionController())

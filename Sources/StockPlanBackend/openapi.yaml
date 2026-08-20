@@ -8203,6 +8203,55 @@ paths:
       requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/RebalancingDocument' } } } }
       responses:
         '200': { description: Updated drift notification preferences, content: { application/json: { schema: { $ref: '#/components/schemas/RebalancingDocument' } } } }
+  /v1/integrations/telegram:
+    get:
+      operationId: getTelegramIntegration
+      tags: [Integrations]
+      summary: Telegram connection status for the authenticated user
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Telegram connection status, content: { application/json: { schema: { $ref: '#/components/schemas/TelegramStatusResponse' } } } }
+        '401': { description: Missing or invalid authentication token }
+    delete:
+      operationId: disconnectTelegramIntegration
+      tags: [Integrations]
+      summary: Disconnect Telegram from the authenticated user
+      security: [{ bearerAuth: [] }]
+      responses:
+        '204': { description: Disconnected }
+        '401': { description: Missing or invalid authentication token }
+  /v1/integrations/telegram/code:
+    post:
+      operationId: createTelegramPairingCode
+      tags: [Integrations]
+      summary: Mint a single-use Telegram pairing code
+      description: >-
+        The plaintext code is returned on this response only; the server stores
+        nothing but its hash. Issuing a code invalidates any previous one.
+      security: [{ bearerAuth: [] }]
+      responses:
+        '201': { description: Pairing code, content: { application/json: { schema: { $ref: '#/components/schemas/TelegramCodeResponse' } } } }
+        '401': { description: Missing or invalid authentication token }
+        '503': { description: Telegram is not configured on this deployment }
+  /v1/integrations/telegram/preferences:
+    get:
+      operationId: getTelegramPreferences
+      tags: [Integrations]
+      summary: Per-alert-kind Telegram delivery preferences
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: Delivery preferences, content: { application/json: { schema: { $ref: '#/components/schemas/TelegramPreferencesResponse' } } } }
+        '401': { description: Missing or invalid authentication token }
+    put:
+      operationId: updateTelegramPreference
+      tags: [Integrations]
+      summary: Update one alert kind's Telegram delivery preference
+      security: [{ bearerAuth: [] }]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/TelegramPreferenceUpdateRequest' } } } }
+      responses:
+        '200': { description: Updated delivery preferences, content: { application/json: { schema: { $ref: '#/components/schemas/TelegramPreferencesResponse' } } } }
+        '400': { description: 'Unknown alert kind or timezone, or an incomplete quiet-hours window' }
+        '401': { description: Missing or invalid authentication token }
 components:
   parameters:
     ScenarioResourceID:
@@ -8255,6 +8304,45 @@ components:
       name: Authorization
       description: Shared secret for inbound RevenueCat webhook delivery. Configure the backend with `REVENUECAT_WEBHOOK_SECRET`.
   schemas:
+    TelegramStatusResponse:
+      type: object
+      required: [available, connected, botUsername]
+      properties:
+        available: { type: boolean, description: Whether this deployment has a bot configured at all }
+        connected: { type: boolean }
+        botUsername: { type: string }
+        lastSeenAt: { type: string, format: date-time, nullable: true }
+        connectedAt: { type: string, format: date-time, nullable: true }
+    TelegramCodeResponse:
+      type: object
+      required: [code, expiresAt, deepLink]
+      properties:
+        code: { type: string, description: Single-use pairing code, shown once }
+        expiresAt: { type: string, format: date-time }
+        deepLink: { type: string, description: 'https://t.me/<bot>?start=<code>' }
+    TelegramPreferenceItem:
+      type: object
+      required: [kind, enabled, timezone]
+      properties:
+        kind: { type: string, enum: [price_target, budget, earnings, tax, watchlist_screen, rebalancing, financial_goal, thesis_watch] }
+        enabled: { type: boolean }
+        quietHoursStart: { type: integer, minimum: 0, maximum: 23, nullable: true }
+        quietHoursEnd: { type: integer, minimum: 0, maximum: 23, nullable: true }
+        timezone: { type: string }
+    TelegramPreferencesResponse:
+      type: object
+      required: [preferences]
+      properties:
+        preferences: { type: array, items: { $ref: '#/components/schemas/TelegramPreferenceItem' } }
+    TelegramPreferenceUpdateRequest:
+      type: object
+      required: [kind, enabled]
+      properties:
+        kind: { type: string, enum: [price_target, budget, earnings, tax, watchlist_screen, rebalancing, financial_goal, thesis_watch] }
+        enabled: { type: boolean }
+        quietHoursStart: { type: integer, minimum: 0, maximum: 23, nullable: true }
+        quietHoursEnd: { type: integer, minimum: 0, maximum: 23, nullable: true }
+        timezone: { type: string }
     UserAIProviderKind:
       type: string
       description: >
