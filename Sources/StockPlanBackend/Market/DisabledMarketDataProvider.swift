@@ -16,7 +16,9 @@ struct MarketDataProviderDisabledError: AbortError {
 struct MarketQuoteUnavailableError: AbortError {
     let symbol: String
     let status: HTTPResponseStatus = .notFound
-    var reason: String { "No quote is available for \(symbol)." }
+    var reason: String {
+        "No quote is available for \(symbol)."
+    }
 }
 
 struct DisabledMarketDataProvider: MarketDataProvider {
