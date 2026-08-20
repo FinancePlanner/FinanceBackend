@@ -209,7 +209,32 @@ struct DefaultMarketDataService: MarketDataService {
         }
 
         do {
-            let fresh = try await provider.quote(symbol: symbol, on: req)
+            var fresh = try await provider.quote(symbol: symbol, on: req)
+
+            // The primary provider reports "I have no idea about this symbol" as an
+            // all-zero quote rather than an error: DisabledMarketDataProvider does it
+            // when no provider is configured, and Finnhub does it for symbols outside
+            // its coverage (most non-US listings). Fall back to FMP, which covers the
+            // European venues Finnhub omits.
+            if Self.isEmptyQuote(fresh), let fallback = await fmpFallbackQuote(symbol: symbol, on: req) {
+                req.logger.info(
+                    "market.quote fmp_fallback symbol=\(symbol) primary=\(providerName)"
+                )
+                fresh = fallback
+            }
+
+            guard !Self.isEmptyQuote(fresh) else {
+                // Never persist a zero. Caching it turns a coverage gap or a transient
+                // outage into a price of 0.00 that outlives the cause.
+                req.logger.warning(
+                    "market.quote empty symbol=\(symbol) provider=\(providerName) fmp_available=\(fmpProvider != nil)"
+                )
+                if let existing {
+                    return makeQuoteResponse(from: existing)
+                }
+                throw Abort(.notFound, reason: "No quote is available for \(symbol).")
+            }
+
             let cache = try await upsertQuoteCache(fresh, provider: providerName, on: req.db)
             let response = makeQuoteResponse(from: cache)
             await redisSetValue(
@@ -228,6 +253,62 @@ struct DefaultMarketDataService: MarketDataService {
                 return response
             }
             throw mapProviderError(error, operation: "quote")
+        }
+    }
+
+    /// True when a provider returned a quote carrying no usable price. Both the
+    /// disabled provider (all-nil fields, price 0) and Finnhub's uncovered-symbol
+    /// response (every field 0) land here.
+    static func isEmptyQuote(_ quote: MarketProviderQuote) -> Bool {
+        guard quote.price <= 0 else { return false }
+        let others = [quote.previousClose, quote.open, quote.high, quote.low]
+        return others.allSatisfy { ($0 ?? 0) == 0 }
+    }
+
+    /// Best-effort FMP quote. Returns nil when FMP is not configured, errors, or
+    /// has nothing for the symbol either — callers treat nil as "still no quote".
+    func fmpFallbackQuote(symbol: String, on req: Request) async -> MarketProviderQuote? {
+        guard let fmpProvider else { return nil }
+
+        // Respect the configured FMP plan. On the free tier only the hardcoded
+        // large-cap US allowlist is licensed, so calling FMP for anything else
+        // burns quota for a response we cannot use. This is the same gate every
+        // other FMP path goes through — the fallback must not route around it.
+        guard (try? validateFMPSymbolAccess(symbol: symbol, operation: "quote")) != nil else {
+            req.logger.info(
+                "market.quote fmp_fallback_skipped symbol=\(symbol) reason=tier tier=\(fmpAccessTier.rawValue)"
+            )
+            return nil
+        }
+
+        do {
+            let quotes = try await fmpProvider.fetchStockQuotes(symbols: [symbol], on: req)
+            guard let match = quotes.first(where: { $0.symbol.uppercased() == symbol.uppercased() })
+                ?? quotes.first
+            else { return nil }
+
+            let mapped = MarketProviderQuote(
+                symbol: symbol,
+                price: match.price,
+                change: match.change,
+                percentChange: match.changePercentage,
+                high: match.dayHigh,
+                low: match.dayLow,
+                open: match.open,
+                previousClose: match.previousClose,
+                // FMP's quote payload carries no currency field; the venue is implied
+                // by `exchange`, which we do not map yet.
+                currency: cacheConfig.defaultCurrency,
+                asOf: match.timestamp > 0
+                    ? Date(timeIntervalSince1970: TimeInterval(match.timestamp))
+                    : Date()
+            )
+            return Self.isEmptyQuote(mapped) ? nil : mapped
+        } catch {
+            req.logger.warning(
+                "market.quote fmp_fallback_failed symbol=\(symbol) error=\(error.localizedDescription)"
+            )
+            return nil
         }
     }
 
