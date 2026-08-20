@@ -448,6 +448,32 @@ struct MessagingLinkingTests {
         }
     }
 
+    @Test("In-flight turns are drained before the application stops")
+    func inFlightTurnsAreDrained() async throws {
+        try await withApp { app in
+            // A valid delivery spawns a detached turn. Without draining, that
+            // turn keeps using the database and event loop while the app is
+            // being torn down — which is a segfault, not an error, and shows up
+            // on Linux long before it shows up on macOS.
+            try await app.testing().test(
+                .POST, "webhooks/telegram",
+                beforeRequest: { req in
+                    req.headers.replaceOrAdd(
+                        name: TelegramWebhookController.secretHeader, value: Self.webhookSecret
+                    )
+                    req.body = ByteBuffer(string: #"{"update_id":77,"message":{"message_id":1,"chat":{"id":4242,"type":"private"},"text":"hello"}}"#)
+                    req.headers.contentType = .json
+                },
+                afterResponse: { res async throws in
+                    #expect(res.status == .ok)
+                }
+            )
+            await app.telegramInFlightTurns.drain()
+            // Draining is terminal: nothing new may start afterwards.
+            #expect(app.telegramInFlightTurns.acceptsWork == false)
+        }
+    }
+
     @Test("The webhook route does not exist without a bot token")
     func webhookAbsentWithoutToken() async throws {
         try await withApp(botConfigured: false) { app in
