@@ -2,13 +2,83 @@ import Foundation
 import StockPlanShared
 import Vapor
 
-/// Eurostat HICP provider for the Euro Area and Portugal. No API key.
-/// Dataset: prc_hicp_manr (HICP monthly annual rate of change).
+/// Eurostat provider for the Euro Area and its member states we support. No API key.
+/// Datasets: prc_hicp_manr (HICP monthly annual rate of change) plus the hub
+/// datasets in `hubDatasets` (labour, growth, yields, housing, sentiment, wages).
 /// Response format is JSON-stat 2.0 with a sparse `value` map — decoded by
 /// `JSONStatDataset` below.
 struct EurostatMacroProvider: MacroProvider {
     let name = "eurostat"
     var baseURL: String = "https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data"
+
+    /// One macro hub series, filtered down to a single series per country so
+    /// `JSONStatDataset.value(at:)` only needs the time coordinate.
+    struct HubDataset {
+        let key: MacroSeriesKey
+        /// Eurostat dissemination path, e.g. "/une_rt_m".
+        let path: String
+        /// Dimension filters excluding `geo` and `time`. Every dimension the
+        /// dataset exposes must be pinned here, or the response comes back with
+        /// several series and no observation can be resolved.
+        let filters: [(String, String)]
+        let unit: String
+        /// The `geo` code for the euro-area aggregate. Datasets disagree —
+        /// une_rt_m publishes only EA21, irt_lt_mcby_m only EA — so each one
+        /// carries its own, verified against the live dimension listing.
+        let euroAreaGeo: String
+
+        /// `geo` value for a country: the aggregate code for EA, ISO code otherwise.
+        func geo(for country: MacroCountry) -> String {
+            country == .ea ? euroAreaGeo : country.rawValue
+        }
+    }
+
+    /// Hub datasets fetched alongside HICP. Each is keyless and free.
+    /// A failing dataset is skipped — HICP is the only required call.
+    static let hubDatasets: [HubDataset] = [
+        HubDataset(
+            key: .unemployment,
+            path: "/une_rt_m",
+            filters: [("unit", "PC_ACT"), ("s_adj", "SA"), ("age", "TOTAL"), ("sex", "T")],
+            unit: "percent",
+            euroAreaGeo: "EA21"
+        ),
+        HubDataset(
+            key: .gdpGrowth,
+            path: "/namq_10_gdp",
+            filters: [("unit", "CLV_PCH_PRE"), ("s_adj", "SCA"), ("na_item", "B1GQ")],
+            unit: "percent",
+            euroAreaGeo: "EA20"
+        ),
+        HubDataset(
+            key: .govBond10Y,
+            path: "/irt_lt_mcby_m",
+            filters: [("int_rt", "MCBY")],
+            unit: "percent",
+            euroAreaGeo: "EA"
+        ),
+        HubDataset(
+            key: .hpiYoY,
+            path: "/prc_hpi_q",
+            filters: [("purchase", "TOTAL"), ("unit", "RCH_A")],
+            unit: "percent",
+            euroAreaGeo: "EA20"
+        ),
+        HubDataset(
+            key: .consumerConfidence,
+            path: "/ei_bsco_m",
+            filters: [("indic", "BS-CSMCI"), ("s_adj", "SA"), ("unit", "BAL")],
+            unit: "balance",
+            euroAreaGeo: "EA20"
+        ),
+        HubDataset(
+            key: .wageGrowth,
+            path: "/lc_lci_r2_q",
+            filters: [("nace_r2", "B-S"), ("lcstruct", "D1_D4_MD5"), ("unit", "PCH_SM"), ("s_adj", "SCA")],
+            unit: "percent",
+            euroAreaGeo: "EA20"
+        ),
+    ]
 
     /// COICOP divisions with display names (CP01..CP12).
     static let divisions: [(code: String, label: String)] = [
@@ -32,14 +102,14 @@ struct EurostatMacroProvider: MacroProvider {
     static let foodCode = "FOOD"
 
     func supports(_ country: MacroCountry) -> Bool {
-        country == .pt || country == .ea
+        country.isEuroArea
     }
 
     func fetchSnapshot(country: MacroCountry, on req: Request) async throws -> MacroProviderResult {
         guard supports(country) else {
             throw Abort(.serviceUnavailable, reason: "Eurostat provider does not support \(country.rawValue).")
         }
-        let geo = country == .pt ? "PT" : "EA20"
+        let geo = country.eurostatGeo
         let sinceTimePeriod = Self.sincePeriod(yearsBack: 8)
 
         var coicops = [Self.headlineCode, Self.coreCode, Self.energyCode, Self.foodCode]
@@ -60,7 +130,87 @@ struct EurostatMacroProvider: MacroProvider {
         query += coicops.map { ("coicop", $0) }
 
         let dataset = try await fetchDataset(path: "/prc_hicp_manr", query: query, on: req)
-        return try Self.buildResult(dataset: dataset, country: country, providerName: name, now: Date())
+        var result = try Self.buildResult(dataset: dataset, country: country, providerName: name, now: Date())
+        result.points += await fetchHubPoints(country: country, sinceTimePeriod: sinceTimePeriod, on: req)
+        return result
+    }
+
+    /// Fetches the macro hub datasets. Each dataset is independent: one that
+    /// fails or has no coverage for this country is logged and skipped rather
+    /// than failing the whole snapshot.
+    private func fetchHubPoints(
+        country: MacroCountry,
+        sinceTimePeriod: String,
+        on req: Request
+    ) async -> [MacroSeriesPointRecord] {
+        var points: [MacroSeriesPointRecord] = []
+        let now = Date()
+        for hub in Self.hubDatasets {
+            // Not the snapshot-wide `geo`: the euro-area aggregate is published
+            // under a different code per dataset (EA / EA20 / EA21).
+            var query: [(String, String)] = [
+                ("format", "JSON"),
+                ("geo", hub.geo(for: country)),
+                ("sinceTimePeriod", sinceTimePeriod),
+            ]
+            query += hub.filters
+            do {
+                let dataset = try await fetchDataset(path: hub.path, query: query, on: req)
+                let hubPoints = Self.hubPoints(
+                    dataset: dataset,
+                    hub: hub,
+                    country: country,
+                    providerName: name,
+                    now: now
+                )
+                if hubPoints.isEmpty {
+                    req.logger.notice("Eurostat \(hub.path) returned no observations for \(country.rawValue).")
+                }
+                points += hubPoints
+            } catch {
+                req.logger.warning("Eurostat \(hub.path) failed for \(country.rawValue): \(String(reflecting: error))")
+            }
+        }
+        return points
+    }
+
+    /// Pure hub-series extraction — unit-testable without Vapor.
+    static func hubPoints(
+        dataset: JSONStatDataset,
+        hub: HubDataset,
+        country: MacroCountry,
+        providerName: String,
+        now: Date
+    ) -> [MacroSeriesPointRecord] {
+        dataset.categoryIDs(dimension: "time").sorted().compactMap { period in
+            guard let value = dataset.value(at: ["time": period]),
+                  let date = periodDate(period)
+            else { return nil }
+            return MacroSeriesPointRecord(
+                country: country.rawValue,
+                seriesKey: hub.key.rawValue,
+                periodDate: date,
+                value: value,
+                unit: hub.unit,
+                source: providerName,
+                vintageDate: now
+            )
+        }
+    }
+
+    /// Normalises a Eurostat time period to a `YYYY-MM-DD` date. Handles the
+    /// monthly ("2026-01"), quarterly ("2026-Q1") and annual ("2026") forms.
+    static func periodDate(_ period: String) -> String? {
+        let parts = period.split(separator: "-", maxSplits: 1).map(String.init)
+        guard let year = parts.first, year.count == 4, Int(year) != nil else { return nil }
+        guard parts.count == 2 else { return "\(year)-01-01" }
+        let suffix = parts[1]
+        if suffix.hasPrefix("Q"), let quarter = Int(suffix.dropFirst()), (1 ... 4).contains(quarter) {
+            let month = (quarter - 1) * 3 + 1
+            return String(format: "%@-%02d-01", year, month)
+        }
+        guard let month = Int(suffix), (1 ... 12).contains(month) else { return nil }
+        return String(format: "%@-%02d-01", year, month)
     }
 
     /// Pure snapshot assembly from a decoded dataset — unit-testable.
@@ -119,7 +269,7 @@ struct EurostatMacroProvider: MacroProvider {
         }
 
         let officialAsOf = latestHeadline.period
-        let headlineName = country == .pt ? "HICP Portugal" : "HICP Euro Area"
+        let headlineName = "HICP \(country.displayName)"
         let headline = InflationGaugeDTO(
             name: headlineName,
             nowValue: latestHeadline.value,
@@ -156,9 +306,9 @@ struct EurostatMacroProvider: MacroProvider {
         }
         let topMovers = moverCandidates.sorted { $0.magnitude > $1.magnitude }.prefix(6).map(\.mover)
 
-        let sourceLabel = country == .pt
-            ? "Eurostat HICP (INE Portugal) (\(officialAsOf))"
-            : "Eurostat HICP + ECB (\(officialAsOf))"
+        let sourceLabel = country == .ea
+            ? "Eurostat HICP + ECB (\(officialAsOf))"
+            : "Eurostat HICP (\(country.displayName)) (\(officialAsOf))"
         let snapshot = InflationSnapshotResponse(
             country: country.rawValue,
             currency: country.currency,

@@ -4,7 +4,8 @@ import Vapor
 
 /// St. Louis Fed FRED provider. Primary source for US official data (BLS/BEA
 /// series, treasury yields, average grocery prices) and fallback source for
-/// BR/PT/EA headline CPI (OECD series mirrored on FRED).
+/// BR and euro-area headline CPI plus hub series (OECD/BIS mirrors on FRED).
+/// Eurostat + ECB are primary for the euro area.
 ///
 /// Docs: https://fred.stlouisfed.org/docs/api/fred/series_observations.html
 /// Quota is 120 req/min; a full US refresh is ~30 sequential requests at a
@@ -28,7 +29,7 @@ struct FREDMacroProvider: MacroProvider {
         switch country {
         case .us:
             try await fetchUSSnapshot(on: req)
-        case .br, .pt, .ea:
+        case .br, .pt, .es, .de, .fr, .it, .ea:
             try await fetchInternationalSnapshot(country: country, on: req)
         }
     }
@@ -258,6 +259,9 @@ struct FREDMacroProvider: MacroProvider {
         HubSeries(key: .initialClaims, id: "ICSA", yoy: false, unit: "claims", observationStart: dailyObservationStart),
         HubSeries(key: .policyRate, id: "DFEDTARU", yoy: false, unit: "percent", observationStart: dailyObservationStart),
         HubSeries(key: .nberRecession, id: "USREC", yoy: false, unit: "flag", observationStart: monthlyObservationStart),
+        HubSeries(key: .govBond10Y, id: "DGS10", yoy: false, unit: "percent", observationStart: dailyObservationStart),
+        HubSeries(key: .consumerConfidence, id: "UMCSENT", yoy: false, unit: "index", observationStart: monthlyObservationStart),
+        HubSeries(key: .wageGrowth, id: "CES0500000003", yoy: true, unit: "percent", observationStart: monthlyObservationStart),
     ]
 
     /// EA lite hubs via FRED mirrors (Eurostat remains primary for HICP).
@@ -269,6 +273,21 @@ struct FREDMacroProvider: MacroProvider {
         HubSeries(key: .mortgageRate, id: "IRLTCT01EZM156N", yoy: false, unit: "percent", observationStart: monthlyObservationStart),
     ]
 
+    /// Euro-area member hubs via FRED OECD/BIS mirrors. Fallback only —
+    /// Eurostat + ECB are primary. Series ids follow the per-country families
+    /// (`LRHUTTTT<CC>M156S`, `NAEXKP01<CC>Q657S`, `IRLTLT01<CC>M156N`,
+    /// `Q<CC>N628BIS`); a discontinued id is skipped by the best-effort loop in
+    /// `fetchHubSeriesPoints` rather than failing the ingest.
+    static func euroMemberHubSeries(_ code: String) -> [HubSeries] {
+        [
+            HubSeries(key: .unemployment, id: "LRHUTTTT\(code)M156S", yoy: false, unit: "percent", observationStart: monthlyObservationStart),
+            HubSeries(key: .gdpGrowth, id: "NAEXKP01\(code)Q657S", yoy: false, unit: "percent", observationStart: monthlyObservationStart),
+            HubSeries(key: .govBond10Y, id: "IRLTLT01\(code)M156N", yoy: false, unit: "percent", observationStart: monthlyObservationStart),
+            HubSeries(key: .hpiYoY, id: "Q\(code)N628BIS", yoy: true, unit: "percent", observationStart: monthlyObservationStart),
+            HubSeries(key: .policyRate, id: "ECBDFR", yoy: false, unit: "percent", observationStart: dailyObservationStart),
+        ]
+    }
+
     /// BR lite hubs via FRED OECD mirrors (IBGE/BCB preferred when wired).
     private static let brHubSeries: [HubSeries] = [
         HubSeries(key: .unemployment, id: "LRHUTTTTBRM156S", yoy: false, unit: "percent", observationStart: monthlyObservationStart),
@@ -279,12 +298,11 @@ struct FREDMacroProvider: MacroProvider {
     /// Fetches housing/economy series for a country. Best-effort per series —
     /// one bad FRED id never aborts the whole hub ingest.
     func fetchHubSeriesPoints(country: MacroCountry, on req: Request) async throws -> [MacroSeriesPointRecord] {
-        let seriesList: [HubSeries]
-        switch country {
-        case .us: seriesList = Self.usHubSeries
-        case .ea: seriesList = Self.eaHubSeries
-        case .br: seriesList = Self.brHubSeries
-        case .pt: return []
+        let seriesList: [HubSeries] = switch country {
+        case .us: Self.usHubSeries
+        case .ea: Self.eaHubSeries
+        case .br: Self.brHubSeries
+        case .pt, .es, .de, .fr, .it: Self.euroMemberHubSeries(country.rawValue)
         }
         let now = Date()
         var points: [MacroSeriesPointRecord] = []
@@ -326,6 +344,10 @@ struct FREDMacroProvider: MacroProvider {
     private static let internationalHeadline: [MacroCountry: (id: String, label: String)] = [
         .br: ("CPALTT01BRM659N", "CPI Brazil (OECD via FRED)"),
         .pt: ("CPALTT01PTM659N", "CPI Portugal (OECD via FRED)"),
+        .es: ("CPALTT01ESM659N", "CPI Spain (OECD via FRED)"),
+        .de: ("CPALTT01DEM659N", "CPI Germany (OECD via FRED)"),
+        .fr: ("CPALTT01FRM659N", "CPI France (OECD via FRED)"),
+        .it: ("CPALTT01ITM659N", "CPI Italy (OECD via FRED)"),
         .ea: ("CPHPTT01EZM659N", "HICP Euro Area (OECD via FRED)"),
     ]
 

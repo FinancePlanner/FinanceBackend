@@ -60,6 +60,7 @@ struct MacroProviderRegistry {
         eurostat: EurostatMacroProvider,
         ibge: IBGEMacroProvider,
         nowflation: NowflationEnrichment,
+        ecb: ECBMacroEnrichment = ECBMacroEnrichment(),
         extraEnrichments: [any MacroEnrichmentProviding] = []
     ) -> MacroProviderRegistry {
         func materialize(_ kind: MacroProviderPlanSelection.ProviderKind?) -> (any MacroProvider)? {
@@ -79,6 +80,9 @@ struct MacroProviderRegistry {
             var enrichments: [any MacroEnrichmentProviding] = []
             if countryPlan.nowflationEnrichment {
                 enrichments.append(nowflation)
+            }
+            if countryPlan.ecbEnrichment {
+                enrichments.append(ecb)
             }
             enrichments += extraEnrichments
             providers[country] = CountryProviders(primary: primary, fallback: fallback, enrichments: enrichments)

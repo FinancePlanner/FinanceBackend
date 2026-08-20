@@ -17,8 +17,25 @@ struct MacroProviderSelectionTests {
         let plan = MacroProviderPlanSelection.plan(macroEnabled: true, hasFREDKey: true, nowflationConfigured: true)
         #expect(plan[.us] == .init(primary: .fred, fallback: nil, nowflationEnrichment: true))
         #expect(plan[.br] == .init(primary: .ibge, fallback: .fred, nowflationEnrichment: false))
-        #expect(plan[.pt] == .init(primary: .eurostat, fallback: .fred, nowflationEnrichment: false))
-        #expect(plan[.ea] == .init(primary: .eurostat, fallback: .fred, nowflationEnrichment: false))
+        let euro = MacroProviderPlanSelection.CountryPlan(
+            primary: .eurostat,
+            fallback: .fred,
+            nowflationEnrichment: false,
+            ecbEnrichment: true
+        )
+        for country in MacroCountry.allCases where country.isEuroArea {
+            #expect(plan[country] == euro)
+        }
+    }
+
+    @Test("every tax jurisdiction has a macro plan")
+    func taxJurisdictionCoverage() throws {
+        let plan = MacroProviderPlanSelection.plan(macroEnabled: true, hasFREDKey: true, nowflationConfigured: true)
+        for code in ["US", "PT", "ES", "DE", "FR", "IT"] {
+            let country = MacroCountry(query: code)
+            #expect(country != nil, "\(code) must be a supported macro country")
+            #expect(try plan[#require(country)]?.primary != .disabled, "\(code) must have a live primary provider")
+        }
     }
 
     @Test("no FRED key: US disabled, intl providers keep working without fallback")
@@ -27,7 +44,12 @@ struct MacroProviderSelectionTests {
         #expect(plan[.us]?.primary == .disabled)
         #expect(plan[.us]?.nowflationEnrichment == false) // enrichment needs a FRED base
         #expect(plan[.br] == .init(primary: .ibge, fallback: nil, nowflationEnrichment: false))
-        #expect(plan[.pt] == .init(primary: .eurostat, fallback: nil, nowflationEnrichment: false))
+        #expect(plan[.pt] == .init(
+            primary: .eurostat,
+            fallback: nil,
+            nowflationEnrichment: false,
+            ecbEnrichment: true
+        ))
     }
 
     @Test("FRED without Nowflation: US live but official-only")
@@ -42,6 +64,10 @@ struct MacroProviderSelectionTests {
         #expect(MacroCountry(query: " BR ") == .br)
         #expect(MacroCountry(query: "EURO") == .ea)
         #expect(MacroCountry(query: "EZ") == .ea)
+        #expect(MacroCountry(query: "de") == .de)
+        #expect(MacroCountry(query: " ES ") == .es)
+        #expect(MacroCountry(query: "FR") == .fr)
+        #expect(MacroCountry(query: "it") == .it)
         #expect(MacroCountry(query: "XX") == nil)
         #expect(MacroCountry(query: nil) == nil)
     }

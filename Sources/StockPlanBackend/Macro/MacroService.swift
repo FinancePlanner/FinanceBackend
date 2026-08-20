@@ -318,9 +318,6 @@ struct DefaultMacroService: MacroService {
     // MARK: - Housing hub
 
     func housing(country: MacroCountry, on req: Request) async throws -> HousingHubResponse {
-        if country == .pt {
-            return Self.emptyHousing(country: country, notes: "Housing hub covers US, BR, and EA in v1.")
-        }
         if let cached: HousingHubResponse = await cacheGet(Self.housingKey(country), on: req) {
             return cached
         }
@@ -390,9 +387,6 @@ struct DefaultMacroService: MacroService {
     // MARK: - Economy hub
 
     func economy(country: MacroCountry, on req: Request) async throws -> EconomyHubResponse {
-        if country == .pt {
-            return Self.emptyEconomy(country: country, notes: "Growth hub covers US, BR, and EA in v1.")
-        }
         if let cached: EconomyHubResponse = await cacheGet(Self.economyKey(country), on: req) {
             return cached
         }
@@ -507,9 +501,6 @@ struct DefaultMacroService: MacroService {
     // MARK: - Policy watch (country-aware)
 
     func policyWatch(country: MacroCountry, on req: Request) async throws -> PolicyWatchResponse {
-        if country == .pt {
-            throw Abort(.notFound, reason: "Policy watch covers US, BR, and EA. Use country=US|BR|EA.")
-        }
         if let cached: PolicyWatchResponse = await cacheGet(Self.policyWatchKey(country), on: req) {
             return cached
         }
@@ -539,10 +530,8 @@ struct DefaultMacroService: MacroService {
                 notes: mapped.notes
             )
             response = mapped
-        case .ea, .br:
+        case .ea, .br, .pt, .es, .de, .fr, .it:
             response = try await buildIntlPolicyWatch(country: country, on: req)
-        case .pt:
-            throw Abort(.notFound, reason: "Policy watch covers US, BR, and EA.")
         }
         await cacheSet(Self.policyWatchKey(country), value: response, ttl: Self.hubTTL, on: req)
         return response
@@ -578,10 +567,11 @@ struct DefaultMacroService: MacroService {
             asOf: snapshot.asOf,
             source: snapshot.source
         )
-        let target = country == .ea ? 2.0 : 3.0 // ECB 2%; Bacen target midpoint ~3% band
+        // Euro-area members share the ECB's 2% target and its policy rate.
+        let target = country.isEuroArea ? 2.0 : 3.0 // ECB 2%; Bacen target midpoint ~3% band
         let distance = ((inflation.value - target) * 100).rounded() / 100
         let policy = try await latestIndicator(country: country, key: .policyRate, name: "Policy rate", on: req)
-        let institution = country == .ea ? "European Central Bank" : "Banco Central do Brasil"
+        let institution = country.isEuroArea ? "European Central Bank" : "Banco Central do Brasil"
         return PolicyWatchResponse(
             country: country.rawValue,
             asOf: inflation.asOf,

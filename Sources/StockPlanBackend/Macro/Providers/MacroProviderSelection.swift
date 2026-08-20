@@ -14,6 +14,9 @@ enum MacroProviderPlanSelection {
         let primary: ProviderKind
         let fallback: ProviderKind?
         let nowflationEnrichment: Bool
+        /// ECB policy-rate enrichment. Keyless, so it rides along with every
+        /// euro-area country.
+        var ecbEnrichment: Bool = false
     }
 
     static func plan(
@@ -40,10 +43,12 @@ enum MacroProviderPlanSelection {
         let euro = CountryPlan(
             primary: .eurostat,
             fallback: hasFREDKey ? .fred : nil,
-            nowflationEnrichment: false
+            nowflationEnrichment: false,
+            ecbEnrichment: true
         )
-        plans[.pt] = euro
-        plans[.ea] = euro
+        for country in MacroCountry.allCases where country.isEuroArea {
+            plans[country] = euro
+        }
         return plans
     }
 }

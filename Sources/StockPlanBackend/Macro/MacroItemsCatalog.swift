@@ -64,7 +64,7 @@ enum MacroItemsCatalog {
     static func items(for country: MacroCountry) -> [Item] {
         switch country {
         case .us: usItems
-        case .pt, .ea: euroItems
+        case .pt, .es, .de, .fr, .it, .ea: euroItems
         case .br: brazilItems
         }
     }

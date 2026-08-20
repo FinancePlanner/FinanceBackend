@@ -7,6 +7,10 @@ enum MacroCountry: String, CaseIterable {
     case us = "US"
     case br = "BR"
     case pt = "PT"
+    case es = "ES"
+    case de = "DE"
+    case fr = "FR"
+    case it = "IT"
     case ea = "EA"
 
     /// Accepts case-insensitive input plus legacy aliases ("EURO" → EA).
@@ -17,6 +21,10 @@ enum MacroCountry: String, CaseIterable {
         case "US": self = .us
         case "BR": self = .br
         case "PT": self = .pt
+        case "ES": self = .es
+        case "DE": self = .de
+        case "FR": self = .fr
+        case "IT": self = .it
         case "EA", "EURO", "EZ": self = .ea
         default: return nil
         }
@@ -26,7 +34,7 @@ enum MacroCountry: String, CaseIterable {
         switch self {
         case .us: "USD"
         case .br: "BRL"
-        case .pt, .ea: "EUR"
+        case .pt, .es, .de, .fr, .it, .ea: "EUR"
         }
     }
 
@@ -35,8 +43,26 @@ enum MacroCountry: String, CaseIterable {
         case .us: "United States"
         case .br: "Brazil"
         case .pt: "Portugal"
+        case .es: "Spain"
+        case .de: "Germany"
+        case .fr: "France"
+        case .it: "Italy"
         case .ea: "Euro Area"
         }
+    }
+
+    /// Countries whose data comes from Eurostat/ECB (euro-area members plus the
+    /// EA aggregate itself).
+    var isEuroArea: Bool {
+        switch self {
+        case .pt, .es, .de, .fr, .it, .ea: true
+        case .us, .br: false
+        }
+    }
+
+    /// Eurostat `geo` dimension code. The EA aggregate uses the 20-member code.
+    var eurostatGeo: String {
+        self == .ea ? "EA20" : rawValue
     }
 }
 
@@ -68,6 +94,10 @@ enum MacroSeriesKey: String, CaseIterable {
     case initialClaims = "initial_claims"
     case policyRate = "policy_rate"
     case nberRecession = "nber_recession"
+    // Rates / sentiment / wages (added for full tax-jurisdiction coverage)
+    case govBond10Y = "gov_bond_10y"
+    case consumerConfidence = "consumer_confidence"
+    case wageGrowth = "wage_growth"
 
     static func itemKey(_ itemID: String) -> String {
         "item.\(itemID)"
