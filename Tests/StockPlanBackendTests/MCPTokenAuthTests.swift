@@ -176,6 +176,63 @@ struct MCPTokenAuthTests {
         }
     }
 
+    // MARK: - Portfolio summary is exposed to third-party tokens under portfolio:read
+
+    @Test("PAT with portfolio:read alone can read the portfolio summary")
+    func patPortfolioReadReadsPortfolioSummary() async throws {
+        try await withApp { app in
+            let user = try await registerUser(app: app)
+            let pat = try await mintPAT(app: app, userId: user.userId, scopes: [.portfolioRead])
+            try await app.testing().test(.GET, "v1/portfolio/summary", beforeRequest: { req in
+                req.headers.bearerAuthorization = .init(token: pat)
+            }, afterResponse: { res async in
+                #expect(res.status == .ok)
+            })
+        }
+    }
+
+    @Test("Legacy PAT with market:read still reads the portfolio summary")
+    func patMarketReadReadsPortfolioSummary() async throws {
+        try await withApp { app in
+            let user = try await registerUser(app: app)
+            let pat = try await mintPAT(app: app, userId: user.userId, scopes: [.marketRead])
+            try await app.testing().test(.GET, "v1/portfolio/summary", beforeRequest: { req in
+                req.headers.bearerAuthorization = .init(token: pat)
+            }, afterResponse: { res async in
+                #expect(res.status == .ok)
+            })
+        }
+    }
+
+    @Test("PAT holding neither portfolio:read nor market:read is forbidden from the summary")
+    func patMissingPortfolioScopesForbiddenFromPortfolioSummary() async throws {
+        try await withApp { app in
+            let user = try await registerUser(app: app)
+            let pat = try await mintPAT(app: app, userId: user.userId, scopes: [.expensesRead])
+            try await app.testing().test(.GET, "v1/portfolio/summary", beforeRequest: { req in
+                req.headers.bearerAuthorization = .init(token: pat)
+            }, afterResponse: { res async in
+                #expect(res.status == .forbidden)
+            })
+        }
+    }
+
+    @Test("PAT cannot reach the rest of the portfolio controller")
+    func patCannotReachOtherPortfolioRoutes() async throws {
+        try await withApp { app in
+            let user = try await registerUser(app: app)
+            let pat = try await mintPAT(app: app, userId: user.userId, scopes: [.marketRead])
+            // These stay on SessionToken.authenticator(), which rejects opaque tokens.
+            for path in ["v1/portfolio/lists", "v1/portfolio/performance", "v1/pnl"] {
+                try await app.testing().test(.GET, path, beforeRequest: { req in
+                    req.headers.bearerAuthorization = .init(token: pat)
+                }, afterResponse: { res async in
+                    #expect(res.status == .unauthorized)
+                })
+            }
+        }
+    }
+
     // MARK: - First-party session still works everywhere
 
     @Test("First-party JWT works on scoped routes with no scope context")
@@ -191,6 +248,11 @@ struct MCPTokenAuthTests {
                 req.headers.bearerAuthorization = .init(token: user.token)
             }, afterResponse: { res async in
                 #expect(res.status != .forbidden && res.status != .unauthorized)
+            })
+            try await app.testing().test(.GET, "v1/portfolio/summary", beforeRequest: { req in
+                req.headers.bearerAuthorization = .init(token: user.token)
+            }, afterResponse: { res async in
+                #expect(res.status == .ok)
             })
         }
     }

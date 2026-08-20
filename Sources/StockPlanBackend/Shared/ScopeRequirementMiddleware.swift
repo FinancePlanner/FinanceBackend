@@ -3,19 +3,34 @@ import Vapor
 /// Enforces a scope on requests authenticated with a third-party token.
 /// First-party sessions carry no ScopeContext and pass through untouched.
 struct ScopeRequirementMiddleware: AsyncMiddleware {
-    let required: APIScope
+    /// The request passes when the token holds at least one of these.
+    let accepted: Set<APIScope>
 
     init(_ required: APIScope) {
-        self.required = required
+        self.init(anyOf: [required])
+    }
+
+    /// Accepts a token holding any one of `accepted` — used where a route is
+    /// migrating to a narrower scope but must keep older tokens working.
+    init(anyOf accepted: Set<APIScope>) {
+        self.accepted = accepted
     }
 
     func respond(to request: Request, chainingTo next: any AsyncResponder) async throws -> Response {
         if let context = request.auth.get(ScopeContext.self),
-           !context.scopes.contains(required)
+           context.scopes.isDisjoint(with: accepted)
         {
-            throw Abort(.forbidden, reason: "insufficient_scope: '\(required.rawValue)' required")
+            throw Abort(.forbidden, reason: "insufficient_scope: \(requirementDescription) required")
         }
         return try await next.respond(to: request)
+    }
+
+    private var requirementDescription: String {
+        accepted
+            .map(\.rawValue)
+            .sorted()
+            .map { "'\($0)'" }
+            .joined(separator: " or ")
     }
 }
 
