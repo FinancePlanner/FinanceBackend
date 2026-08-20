@@ -5850,6 +5850,145 @@ paths:
         '403':
           description: Missing or invalid machine token
 
+  /v1/insights/sentiment/symbols:
+    get:
+      operationId: getSentimentSymbolBatch
+      tags: [Insights]
+      summary: Daily retail sentiment for several symbols
+      description: >-
+        Free. One aggregate per symbol from the materialized daily roll-up, for
+        rendering badges on portfolio and watchlist rows without a request per
+        row. Returns scores and counts only; post-level evidence stays on the
+        Pro ticker endpoint. A symbol absent from the response has no reading.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: symbols
+          in: query
+          required: true
+          description: Comma-separated symbols, at most 100.
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SymbolSentimentBatchResponse'
+        '400':
+          description: No symbols supplied, or more than 100
+        '401':
+          description: Unauthorized
+
+  /v1/insights/sentiment/portfolio:
+    get:
+      operationId: getSentimentPortfolio
+      tags: [Insights]
+      summary: Value-weighted sentiment across the caller's holdings
+      description: >-
+        Free. Weighted by position market value, so a large holding moves the
+        number more than a token one. `coverage` reports the fraction of
+        positions that carry a reading and must be shown alongside the score.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: portfolioListId
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortfolioSentimentResponse'
+        '401':
+          description: Unauthorized
+
+  /v1/insights/sentiment/watchlist:
+    get:
+      operationId: getSentimentWatchlist
+      tags: [Insights]
+      summary: Equal-weighted sentiment across the caller's watchlist
+      description: >-
+        Free. Equal-weighted, because a watchlist carries no position sizes.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: watchlistListId
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortfolioSentimentResponse'
+        '401':
+          description: Unauthorized
+
+  /v1/insights/sentiment/trending:
+    get:
+      operationId: getSentimentTrending
+      tags: [Insights]
+      summary: What retail is loudest about today
+      description: >-
+        Free. Ranked by chatter volume relative to each symbol's own trailing
+        baseline, not by raw post count, so steady megacaps do not occupy the
+        board every day.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, default: 20, minimum: 1, maximum: 50 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MarketTrendingResponse'
+        '401':
+          description: Unauthorized
+
+  /v1/insights/sentiment/history/{symbol}:
+    get:
+      operationId: getSentimentHistory
+      tags: [Insights]
+      summary: Daily sentiment history for one symbol
+      description: Pro-gated. Oldest first, for charting.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema: { type: string }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, default: 30, minimum: 1, maximum: 90 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SymbolSentiment'
+        '400':
+          description: Invalid symbol
+        '401':
+          description: Unauthorized
+        '402':
+          description: Pro subscription required
+
   /v1/goals:
     get:
       operationId: listGoals
@@ -14059,6 +14198,138 @@ components:
           items: { type: string }
         limit:
           type: integer
+    SentimentSourceCounts:
+      type: object
+      required: [x, reddit, stocktwits, news, investing, seekingAlpha]
+      properties:
+        x: { type: integer }
+        reddit: { type: integer }
+        stocktwits: { type: integer }
+        news: { type: integer }
+        investing: { type: integer }
+        seekingAlpha: { type: integer }
+    SentimentTheme:
+      type: object
+      required: [label, stance, evidenceCount]
+      properties:
+        label: { type: string }
+        stance: { type: string, description: "bullish | bearish | mixed" }
+        evidenceCount: { type: integer }
+    SentimentThemesPayload:
+      type: object
+      required: [themes, contrarianFlag]
+      properties:
+        themes:
+          type: array
+          items:
+            $ref: '#/components/schemas/SentimentTheme'
+        summary: { type: string, nullable: true }
+        contrarianFlag: { type: boolean }
+    SymbolSentiment:
+      type: object
+      required: [symbol, asOfDate, label, postCount, sourceCounts]
+      properties:
+        symbol: { type: string }
+        asOfDate: { type: string, description: "yyyy-MM-dd, UTC" }
+        score:
+          type: number
+          format: double
+          nullable: true
+          description: >-
+            -1 to 1. Null means no chatter was measured, which is not the same
+            as a neutral reading and must not be rendered as zero.
+        label: { type: string }
+        confidence: { type: number, format: double, nullable: true }
+        postCount: { type: integer }
+        delta1d: { type: number, format: double, nullable: true }
+        volumeZ: { type: number, format: double, nullable: true }
+        sourceCounts:
+          $ref: '#/components/schemas/SentimentSourceCounts'
+        themes:
+          allOf:
+            - $ref: '#/components/schemas/SentimentThemesPayload'
+          nullable: true
+    SymbolSentimentBatchResponse:
+      type: object
+      required: [windowDays, requested, symbols]
+      properties:
+        windowDays: { type: integer }
+        requested: { type: integer }
+        symbols:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/SymbolSentiment'
+    SentimentHoldingContribution:
+      type: object
+      required: [symbol, score, label, weight]
+      properties:
+        symbol: { type: string }
+        score: { type: number, format: double }
+        label: { type: string }
+        weight: { type: number, format: double, description: "Share of the covered total, 0 to 1." }
+        delta1d: { type: number, format: double, nullable: true }
+    PortfolioSentimentResponse:
+      type: object
+      required: [scope, label, coverage, symbolsCovered, symbolsTotal, postCount, biggestMovers]
+      properties:
+        scope: { type: string, description: "portfolio | watchlist" }
+        asOfDate: { type: string, nullable: true }
+        score: { type: number, format: double, nullable: true }
+        label: { type: string }
+        coverage:
+          type: number
+          format: double
+          description: >-
+            Fraction of positions carrying a reading, 0 to 1. The score is
+            computed over the covered subset only, so this must be displayed
+            with it.
+        symbolsCovered: { type: integer }
+        symbolsTotal: { type: integer }
+        postCount: { type: integer }
+        mostBullish:
+          allOf:
+            - $ref: '#/components/schemas/SentimentHoldingContribution'
+          nullable: true
+        mostBearish:
+          allOf:
+            - $ref: '#/components/schemas/SentimentHoldingContribution'
+          nullable: true
+        biggestMovers:
+          type: array
+          items:
+            $ref: '#/components/schemas/SentimentHoldingContribution'
+    TrendingSentimentEntry:
+      type: object
+      required: [symbol, label, postCount]
+      properties:
+        symbol: { type: string }
+        score: { type: number, format: double, nullable: true }
+        label: { type: string }
+        postCount: { type: integer }
+        volumeZ: { type: number, format: double, nullable: true }
+        delta1d: { type: number, format: double, nullable: true }
+    MarketTrendingResponse:
+      type: object
+      required: [windowDays, mostDiscussed, bullish, bearish, biggestSwings]
+      properties:
+        asOfDate: { type: string, nullable: true }
+        windowDays: { type: integer }
+        mostDiscussed:
+          type: array
+          items:
+            $ref: '#/components/schemas/TrendingSentimentEntry'
+        bullish:
+          type: array
+          items:
+            $ref: '#/components/schemas/TrendingSentimentEntry'
+        bearish:
+          type: array
+          items:
+            $ref: '#/components/schemas/TrendingSentimentEntry'
+        biggestSwings:
+          type: array
+          items:
+            $ref: '#/components/schemas/TrendingSentimentEntry'
     TickerSentimentPost:
       type: object
       required: [text, sentimentLabel, postedAt]

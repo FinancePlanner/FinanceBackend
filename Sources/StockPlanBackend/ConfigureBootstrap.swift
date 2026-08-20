@@ -296,6 +296,12 @@ func registerMigrations(_ app: Application) {
     app.migrations.add(CreateUserAIProviderCredentials())
     app.migrations.add(CreateMessagingLinks())
     app.migrations.add(CreateMessagingPreferences())
+
+    // Retail sentiment: materialized daily aggregates, post provenance, and
+    // the symbol universe the aggregation job walks.
+    app.migrations.add(CreateSymbolSentimentDaily())
+    app.migrations.add(AddSourceToTickerSentimentPost())
+    app.migrations.add(CreateSentimentUniverseSymbol())
 }
 
 func envBool(_ key: String, default defaultValue: Bool) -> Bool {
