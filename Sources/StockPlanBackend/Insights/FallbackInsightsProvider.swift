@@ -14,6 +14,49 @@ import Vapor
 struct FallbackInsightsProvider: InsightsProvider {
     let providers: [any InsightsProvider]
     let logger: Logger
+    /// Shared across every call so one exhausted-credit answer suppresses the
+    /// rest of the run, not just the call that discovered it.
+    let cooldowns: ProviderCooldownRegistry
+
+    init(
+        providers: [any InsightsProvider],
+        logger: Logger,
+        cooldowns: ProviderCooldownRegistry = ProviderCooldownRegistry()
+    ) {
+        self.providers = providers
+        self.logger = logger
+        self.cooldowns = cooldowns
+    }
+
+    /// Union of what every non-cooling provider in the chain can serve.
+    var supportedSentimentSources: [SentimentSource] {
+        var seen = Set<SentimentSource>()
+        var ordered: [SentimentSource] = []
+        for provider in providers where !cooldowns.isCoolingDown(provider.providerLabel) {
+            for source in provider.supportedSentimentSources where seen.insert(source).inserted {
+                ordered.append(source)
+            }
+        }
+        return ordered
+    }
+
+    func fetchSymbolPosts(
+        symbols: [String],
+        sources: [SentimentSource],
+        days: Int,
+        limit: Int,
+        on req: Request
+    ) async throws -> [SymbolPostBatch] {
+        try await firstSuccess("symbol-posts") {
+            try await $0.fetchSymbolPosts(
+                symbols: symbols,
+                sources: sources,
+                days: days,
+                limit: limit,
+                on: req
+            )
+        }
+    }
 
     var isEnabled: Bool {
         providers.contains { $0.isEnabled }
@@ -57,10 +100,26 @@ struct FallbackInsightsProvider: InsightsProvider {
         _ operation: (any InsightsProvider) async throws -> T
     ) async throws -> T {
         var lastError: (any Error)?
+        var skipped = 0
 
         for (index, provider) in providers.enumerated() {
+            let providerLabel = provider.providerLabel
+            if cooldowns.isCoolingDown(providerLabel) {
+                skipped += 1
+                continue
+            }
+
             do {
-                return try await operation(provider)
+                let value = try await operation(provider)
+                // A success means whatever put it in cooldown is resolved.
+                cooldowns.clear(providerLabel)
+                return value
+            } catch let error as InsightsProviderError where error.isTerminalUntilTopUp {
+                lastError = error
+                let until = cooldowns.beginCooldown(providerLabel)
+                logger.error(
+                    "Insights provider \(providerLabel) is out of credit for \(label); suppressed until \(until). \(error.reason)"
+                )
             } catch {
                 lastError = error
                 logger.warning(
@@ -69,7 +128,16 @@ struct FallbackInsightsProvider: InsightsProvider {
             }
         }
 
-        throw lastError ?? Abort(.serviceUnavailable, reason: "No insights provider configured.")
+        if let lastError {
+            throw lastError
+        }
+        if skipped > 0 {
+            throw Abort(
+                .serviceUnavailable,
+                reason: "Every insights provider is in credit cooldown."
+            )
+        }
+        throw Abort(.serviceUnavailable, reason: "No insights provider configured.")
     }
 }
 
@@ -110,11 +178,43 @@ func makeInsightsProvider(_ app: Application) -> any InsightsProvider {
         names.append("deepapi")
     }
 
+    // Last link: free and already-paid-for endpoints, reached directly. It
+    // covers fewer venues than DeepAPI on purpose — Investing.com and Seeking
+    // Alpha have no free API — so an exhausted balance thins the readings
+    // instead of stopping them.
+    let directProvider = DirectAPIInsightsProvider(
+        redditClientID: Environment.get("REDDIT_CLIENT_ID")?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+        redditClientSecret: Environment.get("REDDIT_CLIENT_SECRET")?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+        redditUserAgent: Environment.get("REDDIT_USER_AGENT")?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? "norviq-sentiment/1.0",
+        newsProvider: (Environment.get("FINNHUB_API_KEY")?.isEmpty == false)
+            ? FinnhubNewsProvider()
+            : nil,
+        logger: app.logger
+    )
+    if directProvider.isEnabled {
+        chain.append(directProvider)
+        names.append("direct")
+    }
+
     guard !chain.isEmpty else {
         app.logger.warning("No insights provider configured (set HERMES_BASE_URL or DEEPAPI_API_KEY)")
         return DisabledInsightsProvider()
     }
 
     app.logger.info("Insights providers: \(names.joined(separator: " -> "))")
-    return chain.count == 1 ? chain[0] : FallbackInsightsProvider(providers: chain, logger: app.logger)
+
+    // Registered unconditionally so the readiness endpoint can always ask what
+    // is in cooldown, even on a single-provider chain.
+    let cooldowns = ProviderCooldownRegistry(
+        windowSeconds: TimeInterval(
+            Environment.get("PROVIDER_CREDIT_COOLDOWN_SECONDS").flatMap(Int.init(_:)) ?? 6 * 60 * 60
+        )
+    )
+    app.providerCooldowns = cooldowns
+
+    guard chain.count > 1 else { return chain[0] }
+    return FallbackInsightsProvider(providers: chain, logger: app.logger, cooldowns: cooldowns)
 }

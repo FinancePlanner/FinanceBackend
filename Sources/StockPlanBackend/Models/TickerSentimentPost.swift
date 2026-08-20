@@ -38,6 +38,12 @@ final class TickerSentimentPost: Model, Content, @unchecked Sendable {
     @Field(key: "posted_at")
     var postedAt: Date
 
+    /// Which feed this post came from. Nil only for rows written before the
+    /// multi-source ingest landed; `AddSourceToTickerSentimentPost` backfills
+    /// those to `x`.
+    @Field(key: "source")
+    var source: String?
+
     @Timestamp(key: "created_at", on: .create)
     var createdAt: Date?
 
@@ -54,7 +60,8 @@ final class TickerSentimentPost: Model, Content, @unchecked Sendable {
         sentimentLabel: String,
         sentimentScore: Double?,
         confidence: Double?,
-        postedAt: Date
+        postedAt: Date,
+        source: SentimentSource? = nil
     ) {
         self.id = id
         self.dedupeKey = dedupeKey
@@ -67,5 +74,10 @@ final class TickerSentimentPost: Model, Content, @unchecked Sendable {
         self.sentimentScore = sentimentScore
         self.confidence = confidence
         self.postedAt = postedAt
+        self.source = source?.rawValue
+    }
+
+    var resolvedSource: SentimentSource {
+        source.flatMap(SentimentSource.init(rawValue:)) ?? .x
     }
 }

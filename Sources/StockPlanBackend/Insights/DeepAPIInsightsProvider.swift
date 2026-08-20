@@ -320,9 +320,23 @@ struct DeepAPIInsightsProvider: InsightsProvider {
         }
 
         if let apiError = envelope.error {
-            // Includes insufficient_credits: the caller treats it like any other
-            // failure, so the insights chain falls through to the next provider.
+            // Credit exhaustion gets its own type. It still falls through to the
+            // next provider, but the chain also needs to stop asking: every
+            // further call in the run costs a request and cannot succeed.
+            if Self.creditExhaustionCodes.contains(apiError.code.lowercased()) {
+                throw InsightsProviderError.creditsExhausted(
+                    provider: "DeepAPI",
+                    detail: apiError.message
+                )
+            }
             throw Abort(.badGateway, reason: "DeepAPI \(path) failed [\(apiError.code)]: \(apiError.message)")
+        }
+        // A bare 402 with no envelope error body means the same thing.
+        if response.status.code == 402 {
+            throw InsightsProviderError.creditsExhausted(
+                provider: "DeepAPI",
+                detail: "HTTP 402 on \(path)"
+            )
         }
         guard response.status.code < 300 else {
             throw Abort(.badGateway, reason: "DeepAPI \(path) failed with HTTP \(response.status.code).")
@@ -335,6 +349,13 @@ struct DeepAPIInsightsProvider: InsightsProvider {
     }
 
     private static let maxPolls = 12
+
+    /// Error codes DeepAPI uses for an exhausted balance.
+    static let creditExhaustionCodes: Set<String> = [
+        "insufficient_credits",
+        "payment_required",
+        "quota_exceeded",
+    ]
 
     private func buildFinancialEventsQuery(days: Int, limit _: Int) -> String {
         let topics = ["stock market", "crypto", "forex", "commodities", "earnings", "central banks", "macro economics"]
@@ -592,4 +613,212 @@ private struct DeepAPIRedditPost: Content {
     let comments: Int?
     let postedAt: String?
     let url: String?
+}
+
+// MARK: - Multi-source symbol ingest
+
+extension DeepAPIInsightsProvider {
+    /// Only the scrape routes can attribute a post to a retail venue. With
+    /// `DEEPAPI_SOCIAL_SCRAPING_ENABLED` off, this provider can still answer the
+    /// legacy topic endpoints from web search, but it has nothing to contribute
+    /// to per-symbol retail sentiment — so it declares nothing and the chain
+    /// moves on rather than filing press snippets as retail chatter.
+    var supportedSentimentSources: [SentimentSource] {
+        socialScrapingEnabled ? [.x, .reddit, .stocktwits, .investing, .seekingAlpha] : []
+    }
+
+    func fetchSymbolPosts(
+        symbols: [String],
+        sources: [SentimentSource],
+        days _: Int,
+        limit: Int,
+        on req: Request
+    ) async throws -> [SymbolPostBatch] {
+        let usable = sources.filter { supportedSentimentSources.contains($0) }
+        guard !usable.isEmpty else { return [] }
+
+        var batches: [SymbolPostBatch] = []
+        for symbol in symbols {
+            var posts: [IngestedPost] = []
+
+            for source in usable {
+                do {
+                    posts += try await fetchPosts(symbol: symbol, source: source, limit: limit, on: req)
+                } catch let error as InsightsProviderError where error.isTerminalUntilTopUp {
+                    // Out of credit is not a per-source problem — every
+                    // remaining call in this run would fail the same way.
+                    throw error
+                } catch {
+                    req.logger.warning(
+                        "deepapi.symbol-posts source failed symbol=\(symbol) source=\(source.rawValue) error=\(String(describing: error))"
+                    )
+                }
+            }
+
+            batches.append(SymbolPostBatch(symbol: symbol, posts: posts))
+        }
+        return batches
+    }
+
+    private func fetchPosts(
+        symbol: String,
+        source: SentimentSource,
+        limit: Int,
+        on req: Request
+    ) async throws -> [IngestedPost] {
+        switch source {
+        case .x:
+            try await fetchXPosts(symbol: symbol, limit: limit, on: req)
+        case .reddit:
+            try await fetchRedditPosts(symbol: symbol, limit: limit, on: req)
+        case .stocktwits, .investing, .seekingAlpha:
+            try await fetchPagePosts(symbol: symbol, source: source, on: req)
+        case .news:
+            // Served by the direct provider off the existing Finnhub news feed,
+            // which is already paid for.
+            []
+        }
+    }
+
+    private func fetchXPosts(symbol: String, limit: Int, on req: Request) async throws -> [IngestedPost] {
+        let query = "$\(symbol) OR #\(symbol) OR \"\(symbol) stock\" lang:en"
+        let body = DeepAPITwitterSearchRequest(
+            query: query,
+            maxItems: limit,
+            sort: "latest",
+            maxCostUsd: maxCostUsd,
+            waitForFinishSecs: 60
+        )
+        let posts: [DeepAPITwitterPost] = try await send(path: "/v1/scrape/twitter/search", body: body, on: req) ?? []
+
+        return posts.compactMap { post in
+            let text = post.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { return nil }
+            return IngestedPost(
+                // The upstream id is stable, so a re-run dedupes instead of
+                // duplicating. The old code keyed on array index and a
+                // timestamp, which made every run insert the same posts again.
+                dedupeKey: "deepapi:x:\(symbol):\(post.id)",
+                symbol: symbol,
+                author: post.author?.name,
+                authorHandle: post.author?.handle,
+                text: text,
+                url: post.url,
+                postedAt: parseHermesTimestamp(post.createdAt) ?? Date(),
+                source: .x
+            )
+        }
+    }
+
+    private func fetchRedditPosts(symbol: String, limit: Int, on req: Request) async throws -> [IngestedPost] {
+        let body = DeepAPIRedditSearchRequest(
+            query: "\(symbol) stock",
+            subreddits: Self.equitySubreddits,
+            sort: "new",
+            since: "week",
+            maxItems: limit,
+            maxCostUsd: maxCostUsd,
+            waitForFinishSecs: 60
+        )
+        let posts: [DeepAPIRedditPost] = try await send(path: "/v1/scrape/reddit/search", body: body, on: req) ?? []
+
+        return posts.compactMap { post in
+            let combined = ([post.title, post.text].compactMap(\.self))
+                .joined(separator: "\n")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !combined.isEmpty else { return nil }
+            return IngestedPost(
+                dedupeKey: "deepapi:reddit:\(symbol):\(post.id)",
+                symbol: symbol,
+                author: post.author,
+                authorHandle: post.subreddit.map { "r/\($0)" },
+                text: combined,
+                url: post.url,
+                postedAt: parseHermesTimestamp(post.postedAt) ?? Date(),
+                source: .reddit
+            )
+        }
+    }
+
+    /// Venues with no search API: scrape the symbol's own page.
+    ///
+    /// A scraped page is one document, not a feed of posts, so it lands as a
+    /// single entry. These origins sit behind bot protection often enough that
+    /// an empty result is the normal case, not an error — DeepAPI reports that
+    /// as a free `no_results`/`source_blocked` run, and the symbol simply ends
+    /// up with fewer sources.
+    private func fetchPagePosts(
+        symbol: String,
+        source: SentimentSource,
+        on req: Request
+    ) async throws -> [IngestedPost] {
+        guard let url = Self.pageURL(symbol: symbol, source: source) else { return [] }
+
+        let body = DeepAPIWebsiteScrapeRequest(
+            urls: [url],
+            contentFormat: "text",
+            maxChars: 20000,
+            maxCostUsd: maxCostUsd,
+            waitForFinishSecs: 60
+        )
+        let pages: [DeepAPIScrapedPage] = try await send(path: "/v1/scrape/website", body: body, on: req) ?? []
+
+        return pages.compactMap { page in
+            guard let text = page.text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else {
+                return nil
+            }
+            // Dedupe on the day, not the run: the page is re-scraped daily and
+            // its content changes, but two runs on the same day are the same
+            // observation.
+            return IngestedPost(
+                dedupeKey: "deepapi:\(source.rawValue):\(symbol):\(SentimentDate.today())",
+                symbol: symbol,
+                author: page.title,
+                authorHandle: nil,
+                text: String(text.prefix(4000)),
+                url: page.url ?? url,
+                postedAt: Date(),
+                source: source
+            )
+        }
+    }
+
+    static func pageURL(symbol: String, source: SentimentSource) -> String? {
+        let encoded = symbol.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? symbol
+        switch source {
+        case .stocktwits:
+            return "https://stocktwits.com/symbol/\(encoded)"
+        case .seekingAlpha:
+            return "https://seekingalpha.com/symbol/\(encoded)"
+        case .investing:
+            return "https://www.investing.com/search/?q=\(encoded)"
+        case .x, .reddit, .news:
+            return nil
+        }
+    }
+
+    static let equitySubreddits = [
+        "wallstreetbets",
+        "stocks",
+        "investing",
+        "SecurityAnalysis",
+        "ValueInvesting",
+        "StockMarket",
+        "options",
+    ]
+}
+
+private struct DeepAPIWebsiteScrapeRequest: Content {
+    let urls: [String]
+    let contentFormat: String
+    let maxChars: Int
+    let maxCostUsd: String
+    let waitForFinishSecs: Int
+}
+
+private struct DeepAPIScrapedPage: Content {
+    let url: String?
+    let title: String?
+    let text: String?
+    let markdown: String?
 }

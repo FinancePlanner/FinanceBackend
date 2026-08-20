@@ -264,6 +264,60 @@ public func configure(_ app: Application) async throws {
     if let telegramConfiguration, !telegramConfiguration.usesWebhook {
         app.lifecycle.use(TelegramPoller(client: TelegramClient(token: telegramConfiguration.botToken)))
     }
+    // MARK: Retail sentiment
+
+    //
+    // Reads never touch a provider — the query service is Postgres-only, same
+    // as insights — so a scraping outage costs freshness, never latency.
+    app.sentimentRepository = DatabaseSentimentRepository()
+    app.sentimentSyncStatus = SentimentSyncStatus()
+    let sentimentWindowDays = Environment.get("SENTIMENT_WINDOW_DAYS").flatMap(Int.init(_:)) ?? 7
+    app.sentimentQueryService = DefaultSentimentQueryService(
+        repo: app.sentimentRepository,
+        marketDataService: app.marketDataService,
+        windowDays: sentimentWindowDays
+    )
+
+    app.sentimentIndexSeeder = SentimentIndexSeeder(
+        sentimentRepo: app.sentimentRepository,
+        fmpAPIKey: Environment.get("FMP_API_KEY"),
+        // Explicit override wins over the FMP fetch. Index membership changes
+        // several times a year, so neither is hardcoded.
+        overrideSymbols: (Environment.get("SENTIMENT_SP500_SYMBOLS") ?? "")
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces).uppercased() }
+            .filter { !$0.isEmpty }
+    )
+
+    let sentimentResolver = SentimentUniverseResolver(
+        insightsRepo: app.insightsRepository,
+        sentimentRepo: app.sentimentRepository,
+        pinnedSymbols: pinnedTickers,
+        userTierLimit: Environment.get("SENTIMENT_USER_TIER_LIMIT").flatMap(Int.init(_:)) ?? 500,
+        trendingTierLimit: Environment.get("SENTIMENT_TRENDING_TIER_LIMIT").flatMap(Int.init(_:)) ?? 50
+    )
+
+    // Themes are the only paid-per-symbol step, so they are skipped entirely
+    // when no chat client is configured rather than failing the run.
+    let themeService: (any SentimentThemeGenerating)? = app.openAIChatClient is DisabledOpenAIChatClient
+        ? nil
+        : DefaultSentimentThemeService(
+            client: app.openAIChatClient,
+            maxPosts: Environment.get("SENTIMENT_THEME_POSTS").flatMap(Int.init(_:)) ?? 40,
+            maxThemes: 5
+        )
+
+    app.sentimentAggregationService = DefaultSentimentAggregationService(
+        provider: insightsProvider,
+        insightsRepo: app.insightsRepository,
+        sentimentRepo: app.sentimentRepository,
+        resolver: sentimentResolver,
+        themeService: themeService,
+        windowDays: sentimentWindowDays,
+        batchSize: Environment.get("SENTIMENT_BATCH_SIZE").flatMap(Int.init(_:)) ?? 20,
+        postsPerSymbol: Environment.get("SENTIMENT_POSTS_PER_SYMBOL").flatMap(Int.init(_:)) ?? 100,
+        maxThemeSymbols: Environment.get("SENTIMENT_MAX_THEME_SYMBOLS").flatMap(Int.init(_:)) ?? 150
+    )
 
     let cleanupIntervalMinutes = Environment.get("AUTH_TOKEN_CLEANUP_INTERVAL_MINUTES").flatMap(Int.init(_:)) ?? 60
     app.lifecycle.use(AuthTokenCleanup(interval: TimeInterval(cleanupIntervalMinutes * 60)))
@@ -291,6 +345,14 @@ public func configure(_ app: Application) async throws {
     app.lifecycle.use(DataExportCleanupJob(repository: app.dataExportRepository, interval: 86400))
     let hermesSyncSeconds = Environment.get("HERMES_SYNC_INTERVAL_SECONDS").flatMap(Int64.init(_:)) ?? 900
     app.lifecycle.use(HermesSyncJob(intervalSeconds: hermesSyncSeconds))
+    // Daily roll-up, built on an hourly tick so a restart cannot skip the day.
+    app.lifecycle.use(SentimentAggregationJob(
+        targetHourUTC: Environment.get("SENTIMENT_AGGREGATION_HOUR_UTC").flatMap(Int.init(_:)) ?? 5
+    ))
+    app.lifecycle.use(SentimentRetentionJob(
+        postRetentionDays: Environment.get("SENTIMENT_POST_RETENTION_DAYS").flatMap(Int.init(_:)) ?? 90,
+        dailyRetentionDays: Environment.get("SENTIMENT_DAILY_RETENTION_DAYS").flatMap(Int.init(_:)) ?? 730
+    ))
     let thesisWatchSyncSeconds = Int64(Environment.get("THESIS_WATCH_SYNC_SECONDS").flatMap(Int.init(_:)) ?? 900)
     let thesisWatchSymbolsPerSync = Environment.get("THESIS_WATCH_SYMBOLS_PER_SYNC").flatMap(Int.init(_:)) ?? 30
     app.lifecycle.use(ThesisWatchIngestionJob(

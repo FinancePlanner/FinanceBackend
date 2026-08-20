@@ -139,7 +139,10 @@ struct DatabaseInsightsRepository: InsightsRepository {
 
     func allTrackedSymbols(limit: Int, on db: any Database) async throws -> [String] {
         guard let sql = db as? any SQLDatabase else { return [] }
-        let cappedLimit = max(1, min(limit, 200))
+        // Raised from 200: the sentiment universe wants every symbol any user
+        // holds or watches, not just the popular head. The Hermes machine
+        // endpoint still passes its own much smaller HERMES_TRACKED_TICKERS_LIMIT.
+        let cappedLimit = max(1, min(limit, 1000))
         // Union of equity holdings and non-archived watchlist symbols, ranked by
         // how many distinct users track each symbol. Symbols normalized upper/trim.
         let rows = try await sql.raw("""
