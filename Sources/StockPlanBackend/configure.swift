@@ -261,6 +261,11 @@ public func configure(_ app: Application) async throws {
         logger: app.logger
     )
     app.telegramConfiguration = telegramConfiguration
+    if telegramConfiguration != nil {
+        // Registered in both modes: a webhook deployment still runs turns
+        // detached, and they must not outlive the application.
+        app.lifecycle.use(TelegramTurnDrain())
+    }
     if let telegramConfiguration, !telegramConfiguration.usesWebhook {
         app.lifecycle.use(TelegramPoller(client: TelegramClient(token: telegramConfiguration.botToken)))
     }

@@ -1,5 +1,76 @@
 import Foundation
+import NIOConcurrencyHelpers
 import Vapor
+
+/// In-flight turns, so they can be awaited when the application stops.
+///
+/// A turn runs detached from the delivery that started it, which means nothing
+/// otherwise keeps it inside the application's lifetime. On a pod receiving
+/// SIGTERM — or a test tearing its app down — a detached turn would go on using
+/// a database and an event loop that are being dismantled underneath it, which
+/// is a segfault rather than an error.
+final class TelegramInFlightTurns: @unchecked Sendable {
+    // NIOLock rather than NSLock: NSLock's lock() is unavailable from an
+    // async context, and drain() is async.
+    private let lock = NIOLock()
+    private var tasks: [UUID: Task<Void, Never>] = [:]
+    private var isShuttingDown = false
+
+    /// Registers a task, or declines if shutdown has already begun.
+    func register(_ id: UUID, task: Task<Void, Never>) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !isShuttingDown else { return false }
+        tasks[id] = task
+        return true
+    }
+
+    func finish(_ id: UUID) {
+        lock.lock()
+        tasks[id] = nil
+        lock.unlock()
+    }
+
+    var acceptsWork: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return !isShuttingDown
+    }
+
+    /// Stops accepting new turns and waits for the running ones.
+    func drain() async {
+        lock.lock()
+        isShuttingDown = true
+        let running = Array(tasks.values)
+        lock.unlock()
+        for task in running {
+            task.cancel()
+            await task.value
+        }
+    }
+}
+
+extension Application {
+    private struct TelegramInFlightKey: StorageKey {
+        typealias Value = TelegramInFlightTurns
+    }
+
+    var telegramInFlightTurns: TelegramInFlightTurns {
+        if let existing = storage[TelegramInFlightKey.self] {
+            return existing
+        }
+        let created = TelegramInFlightTurns()
+        storage[TelegramInFlightKey.self] = created
+        return created
+    }
+}
+
+/// Awaits in-flight turns before the application tears itself down.
+struct TelegramTurnDrain: LifecycleHandler {
+    func shutdownAsync(_ application: Application) async {
+        await application.telegramInFlightTurns.drain()
+    }
+}
 
 /// Runs one update to completion, detached from whatever delivered it.
 ///
@@ -18,8 +89,12 @@ enum TelegramBridge {
 
     static func dispatch(_ update: TelegramUpdate, application: Application) {
         guard let client = application.telegramConfiguration.map({ TelegramClient(token: $0.botToken) }) else { return }
+        let turns = application.telegramInFlightTurns
+        guard turns.acceptsWork else { return }
+        let id = UUID()
 
-        Task {
+        let task = Task {
+            defer { turns.finish(id) }
             let req = Request(
                 application: application,
                 method: .POST,
@@ -39,6 +114,11 @@ enum TelegramBridge {
             } catch {
                 req.logger.error("telegram_update_failed error=\(String(reflecting: type(of: error)))")
             }
+        }
+
+        // Lost the race against shutdown: stop before touching the application.
+        if !turns.register(id, task: task) {
+            task.cancel()
         }
     }
 
