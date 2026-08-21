@@ -269,6 +269,7 @@ public func configure(_ app: Application) async throws {
     if let telegramConfiguration, !telegramConfiguration.usesWebhook {
         app.lifecycle.use(TelegramPoller(client: TelegramClient(token: telegramConfiguration.botToken)))
     }
+
     // MARK: Retail sentiment
 
     //
