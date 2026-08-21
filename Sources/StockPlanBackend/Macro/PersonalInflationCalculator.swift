@@ -165,7 +165,10 @@ enum PersonalInflationCalculator {
         country: MacroCountry,
         in components: [InflationComponentDTO]
     ) -> InflationComponentDTO? {
-        let patterns: [String] = switch (country, family) {
+        // Every euro-area country shares the COICOP division labels Eurostat
+        // returns, so they share one basket mapping.
+        let basket: MacroCountry = country.isEuroArea ? .ea : country
+        let patterns: [String] = switch (basket, family) {
         case (.us, .foodHome): ["food at home"]
         case (.us, .restaurants): ["food away"]
         case (.us, .rent): ["shelter: rent"]
@@ -187,17 +190,19 @@ enum PersonalInflationCalculator {
         case (.br, .communications): ["comunicacao"]
         case (.br, .education): ["educacao"]
         case (.br, .household): ["artigos de residencia"]
-        case (.pt, .foodHome), (.ea, .foodHome): ["food and non-alcoholic"]
-        case (.pt, .restaurants), (.ea, .restaurants): ["restaurants and hotels"]
-        case (.pt, .rent), (.ea, .rent), (.pt, .ownedHousing), (.ea, .ownedHousing),
-             (.pt, .electricity), (.ea, .electricity), (.pt, .utilityGas), (.ea, .utilityGas): ["housing, water, electricity"]
-        case (.pt, .transport), (.ea, .transport): ["transport"]
-        case (.pt, .health), (.ea, .health): ["health"]
-        case (.pt, .apparel), (.ea, .apparel): ["clothing and footwear"]
-        case (.pt, .recreation), (.ea, .recreation): ["recreation and culture"]
-        case (.pt, .communications), (.ea, .communications): ["communications"]
-        case (.pt, .education), (.ea, .education): ["education"]
-        case (.pt, .household), (.ea, .household): ["furnishings and household"]
+        case (.ea, .foodHome): ["food and non-alcoholic"]
+        case (.ea, .restaurants): ["restaurants and hotels"]
+        case (.ea, .rent), (.ea, .ownedHousing),
+             (.ea, .electricity), (.ea, .utilityGas): ["housing, water, electricity"]
+        case (.ea, .transport): ["transport"]
+        case (.ea, .health): ["health"]
+        case (.ea, .apparel): ["clothing and footwear"]
+        case (.ea, .recreation): ["recreation and culture"]
+        case (.ea, .communications): ["communications"]
+        case (.ea, .education): ["education"]
+        case (.ea, .household): ["furnishings and household"]
+        // Unreachable: `basket` folds every euro-area country into `.ea` above.
+        case (.pt, _), (.es, _), (.de, _), (.fr, _), (.it, _): []
         }
         return components.first { component in
             let normalized = component.category

@@ -28,6 +28,14 @@ final class MacroRefreshJob: LifecycleHandler, @unchecked Sendable {
     }
 
     func didBoot(_ app: Application) throws {
+        // Tests boot and shut down an application per suite, far faster than a
+        // refresh cycle takes. Scheduling live upstream fetches there races
+        // teardown for no benefit; the tests that exercise this job call
+        // `runOnce` directly.
+        guard app.environment != .testing else {
+            app.logger.debug("macro_refresh not scheduled in testing environment")
+            return
+        }
         let countries = app.macroProviderRegistry.enabledCountries
         guard !countries.isEmpty else {
             app.logger.info("macro_refresh disabled: no macro providers configured (set FRED_API_KEY and/or MACRO_ENABLED)")
@@ -68,6 +76,14 @@ final class MacroRefreshJob: LifecycleHandler, @unchecked Sendable {
     private func tick(_ app: Application, force: Bool = false) async {
         let now = Date()
         for country in app.macroProviderRegistry.enabledCountries {
+            // Task cancellation is cooperative: `shutdown` cancels this task,
+            // but without this check the loop would carry on to the next
+            // country and build a `Request` against an application whose
+            // clients and databases are already torn down, which traps.
+            if Task.isCancelled {
+                app.logger.info("macro_refresh cancelled; stopping before \(country.rawValue)")
+                return
+            }
             if !force,
                let last = app.macroSyncStatus.lastSuccessAt(country),
                now.timeIntervalSince(last) < cadence(for: country)

@@ -200,7 +200,7 @@ enum AIReadToolRegistry {
     private static let macroCountryProperties = [
         "country": OpenAIParameter(
             type: "string",
-            description: "Region code: US, BR, PT, or EA. Ask the user when their intended region is unclear.",
+            description: "Region code: US, BR, PT, ES, DE, FR, IT, or EA. Ask the user when their intended region is unclear.",
             enumValues: MacroCountry.allCases.map(\.rawValue)
         ),
     ]
@@ -209,7 +209,7 @@ enum AIReadToolRegistry {
 
     private static func macroCountry(_ args: [String: Any]) throws -> MacroCountry {
         guard let country = MacroCountry(query: stringArg(args, "country")) else {
-            throw Abort(.badRequest, reason: "country must be US, BR, PT, or EA")
+            throw Abort(.badRequest, reason: "country must be US, BR, PT, ES, DE, FR, IT, or EA")
         }
         return country
     }

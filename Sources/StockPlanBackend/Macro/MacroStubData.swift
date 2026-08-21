@@ -11,7 +11,7 @@ enum MacroStubData {
         switch country {
         case .us: return usSnapshot(now: now)
         case .br: return brazilSnapshot(now: now)
-        case .pt, .ea: return euroAreaSnapshot(now: now, country: country)
+        case .pt, .es, .de, .fr, .it, .ea: return euroAreaSnapshot(now: now, country: country)
         }
     }
 
@@ -19,7 +19,7 @@ enum MacroStubData {
         let baseValue = switch country {
         case .us: 1.71
         case .br: 4.3
-        case .pt, .ea: 2.3
+        case .pt, .es, .de, .fr, .it, .ea: 2.3
         }
         let points: [MacroSeriesPoint] = [
             .init(date: "2026-02-01", value: baseValue, series: seriesKey),
