@@ -81,6 +81,14 @@ func configurePersistence(_ app: Application) async throws {
             // Caches POST/PUT/DELETE responses in Redis (24h TTL). No-op for other methods or missing header.
             app.middleware.use(IdempotencyMiddleware(ttl: 86400))
         } catch {
+            // RedisConfiguration resolves the hostname eagerly, so a DNS blip at
+            // boot disables Redis for the pod's entire life — and every
+            // rate-limited route then answers 503. In production, fail the boot
+            // instead and let the orchestrator restart us until the name resolves.
+            if app.environment == .production {
+                app.logger.critical("Redis unavailable at boot: REDIS_URL is set but configuration failed. error=\(error)")
+                throw error
+            }
             app.logger.warning("Redis disabled: could not parse/configure REDIS_URL. error=\(error)")
         }
     } else {
