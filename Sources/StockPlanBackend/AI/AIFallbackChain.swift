@@ -73,6 +73,10 @@ struct FallbackChatClient: OpenAIChatClient {
     ) async throws -> OpenAIMessage {
         var lastError: (any Error)?
         var failures = 0
+        // Only the last error survives to be thrown, which on its own says
+        // nothing about what the other rungs did. Kept so the exhaustion log and
+        // the alert can name every rung and how it failed.
+        var attempted: [String] = []
 
         for rung in rungs {
             if responseFormat != nil, !rung.tier.supportsResponseFormat {
@@ -103,6 +107,19 @@ struct FallbackChatClient: OpenAIChatClient {
             } catch {
                 lastError = error
                 failures += 1
+                let status = Self.statusLabel(error)
+                attempted.append("\(rung.tier.label)|\(rung.tier.model)=\(status)")
+                // A free rung refusing is the one that matters while the account
+                // is deliberately unfunded: those models are metered per day, and
+                // the allowance is tiered by balance.
+                if rung.tier.model.hasSuffix(":free"), status == "429_rate_limited" {
+                    await AIProviderAlerter.freeTierRefused(
+                        tier: rung.tier.label,
+                        model: rung.tier.model,
+                        status: status,
+                        on: req
+                    )
+                }
                 req.logger.warning("ai_fallback_switch", metadata: [
                     "from_tier": "\(rung.tier.label)",
                     "model": "\(rung.tier.model)",
@@ -114,7 +131,17 @@ struct FallbackChatClient: OpenAIChatClient {
 
         // Every rung failed (or was skipped). Rethrowing the last error keeps the
         // `.badGateway` surface a single client would have produced, so callers
-        // and the assistant's BYOK error mapping behave exactly as before.
+        // and the assistant's BYOK error mapping behave exactly as before — but
+        // that error alone cannot say the *chain* is gone rather than one call
+        // being unlucky, so record and announce that separately.
+        if failures > 0 {
+            req.logger.error("ai_chain_exhausted", metadata: [
+                "rungs": "\(rungs.count)",
+                "failed": "\(failures)",
+                "attempted": "\(attempted.joined(separator: ","))",
+            ])
+            await AIProviderAlerter.chainExhausted(statuses: attempted, on: req)
+        }
         throw lastError ?? Abort(.serviceUnavailable, reason: "AI insights are not enabled on this server.")
     }
 
