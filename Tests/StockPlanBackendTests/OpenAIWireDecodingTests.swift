@@ -139,3 +139,81 @@ struct OpenAIWireDecodingTests {
         #expect(decoded.usage?.promptTokens == nil)
     }
 }
+
+/// A completion cut off by the token cap comes back as an ordinary success with
+/// partial text. Resuming it is right for prose and wrong for everything else,
+/// so the guards matter more than the continuation itself.
+@Suite("Truncated completion resumption")
+struct OpenAIContinuationTests {
+    private func assistant(
+        _ content: String?,
+        toolCalls: [OpenAIToolCall]? = nil
+    ) -> OpenAIMessage {
+        OpenAIMessage(role: "assistant", content: content, toolCalls: toolCalls)
+    }
+
+    @Test("Prose cut off by the token cap is resumed")
+    func resumesTruncatedProse() {
+        #expect(DefaultOpenAIChatClient.canResume(
+            finishReason: "length",
+            message: assistant("Your biggest category this month was"),
+            responseFormat: nil
+        ))
+    }
+
+    @Test("A completed answer is left alone")
+    func leavesCompleteAnswers() {
+        for reason in ["stop", "tool_calls", nil] {
+            #expect(!DefaultOpenAIChatClient.canResume(
+                finishReason: reason,
+                message: assistant("All done."),
+                responseFormat: nil
+            ))
+        }
+    }
+
+    @Test("A truncated tool call is never resumed")
+    func refusesTruncatedToolCalls() {
+        // The arguments are half-written JSON; continuing would act on a
+        // malformed call rather than repair it.
+        let call = OpenAIToolCall(
+            id: "call_1",
+            type: "function",
+            function: OpenAIFunctionCall(name: "list_expenses", arguments: "{\"mon")
+        )
+        #expect(!DefaultOpenAIChatClient.canResume(
+            finishReason: "length",
+            message: assistant("Let me check", toolCalls: [call]),
+            responseFormat: nil
+        ))
+    }
+
+    @Test("JSON-mode completions are never resumed")
+    func refusesJSONMode() {
+        // Two independent completions concatenated are not valid JSON.
+        #expect(!DefaultOpenAIChatClient.canResume(
+            finishReason: "length",
+            message: assistant("{\"kind\":\"spen"),
+            responseFormat: "json_object"
+        ))
+    }
+
+    @Test("An empty completion has nothing to continue from")
+    func refusesEmptyContent() {
+        // Reasoning tokens ate the whole budget; asking again would burn it the
+        // same way rather than produce the missing answer.
+        for content in [nil, "", "   \n "] {
+            #expect(!DefaultOpenAIChatClient.canResume(
+                finishReason: "length",
+                message: assistant(content),
+                responseFormat: nil
+            ))
+        }
+    }
+
+    @Test("Continuations are capped so one turn cannot spiral")
+    func continuationsAreCapped() {
+        #expect(DefaultOpenAIChatClient.maxContinuations >= 1)
+        #expect(DefaultOpenAIChatClient.maxContinuations <= 3)
+    }
+}

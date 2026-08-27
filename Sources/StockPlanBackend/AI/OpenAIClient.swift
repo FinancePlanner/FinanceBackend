@@ -302,12 +302,106 @@ struct DefaultOpenAIChatClient: OpenAIChatClient {
         }
     }
 
+    /// How many follow-up requests a truncated answer is worth.
+    ///
+    /// Each one is a full completion, billed and timed like any other, so this
+    /// stays small: two rounds triple the worst-case cost of a turn already.
+    static let maxContinuations = 2
+
+    /// Whether a length-truncated completion can be safely resumed.
+    ///
+    /// Three cases where continuing makes things worse rather than better:
+    /// a truncated tool call carries half-written JSON arguments, so resuming
+    /// would act on a malformed call; two JSON-mode completions concatenated are
+    /// not valid JSON; and with no content at all there is nothing to continue
+    /// from — the budget went entirely to reasoning tokens, and asking again
+    /// would just burn it the same way.
+    static func canResume(
+        finishReason: String?,
+        message: OpenAIMessage,
+        responseFormat: String?
+    ) -> Bool {
+        guard finishReason == "length", responseFormat == nil else { return false }
+        guard message.toolCalls?.isEmpty != false else { return false }
+        guard let content = message.content,
+              !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return false }
+        return true
+    }
+
+    /// Asks for the rest of an answer the token cap cut short.
+    ///
+    /// Phrased as a plain user turn rather than assistant-prefill: prefill is the
+    /// better technique but support for it varies by provider and route, and a
+    /// silently-ignored prefill would duplicate the whole answer.
+    private static let resumePrompt = """
+    Continue your previous answer from exactly where it stopped. \
+    Do not repeat any of it, and do not start over.
+    """
+
     func chat(
         messages: [OpenAIMessage],
         tools: [OpenAITool],
         responseFormat: String?,
         on req: Request
     ) async throws -> OpenAIMessage {
+        var result = try await completion(
+            messages: messages,
+            tools: tools,
+            responseFormat: responseFormat,
+            on: req
+        )
+        // A completion stopped by the token cap comes back as an ordinary
+        // success carrying half an answer. Ask for the rest rather than handing
+        // the user a sentence that breaks off mid-word.
+        var transcript = messages
+        var rounds = 0
+        while rounds < Self.maxContinuations,
+              Self.canResume(
+                  finishReason: result.finishReason,
+                  message: result.message,
+                  responseFormat: responseFormat
+              )
+        {
+            rounds += 1
+            req.logger.warning(
+                "ai_completion_truncated round=\(rounds) model=\(model) content_chars=\(result.message.content?.count ?? 0)"
+            )
+            transcript.append(result.message)
+            transcript.append(OpenAIMessage(role: "user", content: Self.resumePrompt))
+            let next = try await completion(
+                messages: transcript,
+                tools: tools,
+                responseFormat: responseFormat,
+                on: req
+            )
+            guard let addition = next.message.content, !addition.isEmpty else { break }
+            result = Completion(
+                message: OpenAIMessage(
+                    role: result.message.role,
+                    content: (result.message.content ?? "") + addition,
+                    toolCalls: next.message.toolCalls,
+                    reasoningDetails: next.message.reasoningDetails,
+                    reasoning: next.message.reasoning
+                ),
+                finishReason: next.finishReason
+            )
+        }
+        return result.message
+    }
+
+    struct Completion {
+        let message: OpenAIMessage
+        let finishReason: String?
+    }
+
+    /// One round trip to the provider.
+    private func completion(
+        messages: [OpenAIMessage],
+        tools: [OpenAITool],
+        responseFormat: String?,
+        on req: Request
+    ) async throws -> Completion {
         let body = OpenAIChatRequestBody(
             model: model,
             messages: messages,
@@ -368,7 +462,7 @@ struct DefaultOpenAIChatClient: OpenAIChatClient {
                 "ai_completion_empty finish_reason=\(finishReason) model=\(responseModel)"
             )
         }
-        return choice.message
+        return Completion(message: choice.message, finishReason: choice.finishReason)
     }
 }
 
