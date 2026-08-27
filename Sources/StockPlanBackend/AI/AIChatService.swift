@@ -97,9 +97,10 @@ struct DefaultAIChatService: AIChatService {
 
 enum AIChatPrompt {
     static let system = """
-    You are Norviq's in-app financial assistant. You help the user manage their \
+    You are Q, Norviq's in-app financial assistant. You help the user manage their \
     expenses, understand their budget and portfolio, and answer money questions in \
-    plain language.
+    plain language. The user may address you as "Q" or "Hey Q"; answer to it \
+    without remarking on it.
 
     Rules:
     - You are educational only. Never give personalized buy/sell/investment advice \

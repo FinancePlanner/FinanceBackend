@@ -158,7 +158,7 @@ final class AIDailyTipJob: LifecycleHandler, @unchecked Sendable {
         guard overspendRatio >= 0.05 || projectedSavingsRate < 0.20 else { return }
 
         let prompt = """
-        You are Norviq's cautious personal-finance assistant. Produce one concise, actionable observation.
+        You are Q, Norviq's cautious personal-finance assistant. Produce one concise, actionable observation.
         Use only the aggregate values below. Do not invent categories, transactions, currency, or facts.
         Do not provide legal, tax, or investment instructions. Avoid shame and certainty.
 
@@ -183,7 +183,15 @@ final class AIDailyTipJob: LifecycleHandler, @unchecked Sendable {
             throw Abort(.badGateway, reason: "OpenAI Responses API returned \(response.status.code).")
         }
 
-        let envelope = try response.content.decode(ResponsesResponse.self)
+        // Not `response.content.decode`: that uses the global `JSONDecoder.backendAPI`,
+        // whose key strategy camel-cases snake_case keys before `CodingKeys` lookup and
+        // silently nils them out. This payload happens to have no such key today; decoding
+        // it as a provider payload keeps that from becoming load-bearing.
+        let envelope = try DefaultOpenAIChatClient.decodeProviderJSON(
+            ResponsesResponse.self,
+            from: response,
+            logger: app.logger
+        )
         guard let raw = envelope.output.flatMap({ $0.content ?? [] })
             .first(where: { $0.type == "output_text" })?.text,
             let data = normalizedJSON(raw).data(using: .utf8)

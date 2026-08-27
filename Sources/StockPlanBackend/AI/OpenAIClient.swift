@@ -161,14 +161,14 @@ private struct OpenAIChatRequestBody: Content {
     }
 }
 
-private struct OpenAIChatResponseBody: Content {
+struct OpenAIChatResponseBody: Content {
     var choices: [OpenAIChoice]
     var model: String?
     var provider: String?
     var usage: OpenAIUsage?
 }
 
-private struct OpenAIUsage: Content {
+struct OpenAIUsage: Content {
     struct CompletionDetails: Content {
         var reasoningTokens: Int?
 
@@ -190,7 +190,7 @@ private struct OpenAIUsage: Content {
     }
 }
 
-private struct OpenAIChoice: Content {
+struct OpenAIChoice: Content {
     var message: OpenAIMessage
     var finishReason: String?
 
@@ -263,12 +263,145 @@ struct DefaultOpenAIChatClient: OpenAIChatClient {
         self.timeout = timeout
     }
 
+    /// Decodes a provider chat completion.
+    ///
+    /// Deliberately not `response.content.decode`: that routes through
+    /// `ContentConfiguration.global`, whose `JSONDecoder.backendAPI` key strategy
+    /// camel-cases every snake_case key *before* `CodingKeys` lookup. Our wire
+    /// structs map those keys explicitly, so `tool_calls`, `finish_reason` and
+    /// the whole `usage` block silently decoded as nil — the assistant's tool
+    /// calls were dropped and truncation was undetectable. Same trap, and the
+    /// same fix, as `oauthDecodeProviderJSON` in `OAuthProviderClient`.
+    static func decodeChatResponse(
+        _ response: ClientResponse,
+        logger: Logger? = nil
+    ) throws -> OpenAIChatResponseBody {
+        try decodeProviderJSON(OpenAIChatResponseBody.self, from: response, logger: logger)
+    }
+
+    /// Shared by every AI-provider payload we decode. See the note above for why
+    /// this exists rather than `response.content.decode`.
+    static func decodeProviderJSON<T: Decodable>(
+        _ type: T.Type,
+        from response: ClientResponse,
+        logger: Logger? = nil
+    ) throws -> T {
+        guard
+            let buffer = response.body,
+            let data = buffer.getData(at: buffer.readerIndex, length: buffer.readableBytes)
+        else {
+            throw Abort(.badGateway, reason: "AI service returned no result.")
+        }
+        do {
+            return try JSONDecoder.externalProvider.decode(type, from: data)
+        } catch {
+            // `MessagingService` sends `abort.reason` straight to the Telegram
+            // user, so the decoding detail belongs in the log, never the sentence.
+            logger?.error("ai_provider_undecodable type=\(type) error=\(error)")
+            throw Abort(.badGateway, reason: "AI service returned an unreadable response.")
+        }
+    }
+
+    /// How many follow-up requests a truncated answer is worth.
+    ///
+    /// Each one is a full completion, billed and timed like any other, so this
+    /// stays small: two rounds triple the worst-case cost of a turn already.
+    static let maxContinuations = 2
+
+    /// Whether a length-truncated completion can be safely resumed.
+    ///
+    /// Three cases where continuing makes things worse rather than better:
+    /// a truncated tool call carries half-written JSON arguments, so resuming
+    /// would act on a malformed call; two JSON-mode completions concatenated are
+    /// not valid JSON; and with no content at all there is nothing to continue
+    /// from — the budget went entirely to reasoning tokens, and asking again
+    /// would just burn it the same way.
+    static func canResume(
+        finishReason: String?,
+        message: OpenAIMessage,
+        responseFormat: String?
+    ) -> Bool {
+        guard finishReason == "length", responseFormat == nil else { return false }
+        guard message.toolCalls?.isEmpty != false else { return false }
+        guard let content = message.content,
+              !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return false }
+        return true
+    }
+
+    /// Asks for the rest of an answer the token cap cut short.
+    ///
+    /// Phrased as a plain user turn rather than assistant-prefill: prefill is the
+    /// better technique but support for it varies by provider and route, and a
+    /// silently-ignored prefill would duplicate the whole answer.
+    private static let resumePrompt = """
+    Continue your previous answer from exactly where it stopped. \
+    Do not repeat any of it, and do not start over.
+    """
+
     func chat(
         messages: [OpenAIMessage],
         tools: [OpenAITool],
         responseFormat: String?,
         on req: Request
     ) async throws -> OpenAIMessage {
+        var result = try await completion(
+            messages: messages,
+            tools: tools,
+            responseFormat: responseFormat,
+            on: req
+        )
+        // A completion stopped by the token cap comes back as an ordinary
+        // success carrying half an answer. Ask for the rest rather than handing
+        // the user a sentence that breaks off mid-word.
+        var transcript = messages
+        var rounds = 0
+        while rounds < Self.maxContinuations,
+              Self.canResume(
+                  finishReason: result.finishReason,
+                  message: result.message,
+                  responseFormat: responseFormat
+              )
+        {
+            rounds += 1
+            req.logger.warning(
+                "ai_completion_truncated round=\(rounds) model=\(model) content_chars=\(result.message.content?.count ?? 0)"
+            )
+            transcript.append(result.message)
+            transcript.append(OpenAIMessage(role: "user", content: Self.resumePrompt))
+            let next = try await completion(
+                messages: transcript,
+                tools: tools,
+                responseFormat: responseFormat,
+                on: req
+            )
+            guard let addition = next.message.content, !addition.isEmpty else { break }
+            result = Completion(
+                message: OpenAIMessage(
+                    role: result.message.role,
+                    content: (result.message.content ?? "") + addition,
+                    toolCalls: next.message.toolCalls,
+                    reasoningDetails: next.message.reasoningDetails,
+                    reasoning: next.message.reasoning
+                ),
+                finishReason: next.finishReason
+            )
+        }
+        return result.message
+    }
+
+    struct Completion {
+        let message: OpenAIMessage
+        let finishReason: String?
+    }
+
+    /// One round trip to the provider.
+    private func completion(
+        messages: [OpenAIMessage],
+        tools: [OpenAITool],
+        responseFormat: String?,
+        on req: Request
+    ) async throws -> Completion {
         let body = OpenAIChatRequestBody(
             model: model,
             messages: messages,
@@ -296,7 +429,7 @@ struct DefaultOpenAIChatClient: OpenAIChatClient {
             throw OpenAIChatUpstreamError(upstreamStatus: response.status.code)
         }
 
-        let decoded = try response.content.decode(OpenAIChatResponseBody.self)
+        let decoded = try Self.decodeChatResponse(response, logger: req.logger)
         guard let choice = decoded.choices.first else {
             req.logger.warning("ai_completion_empty_choices provider=\(decoded.provider ?? "unknown") model=\(decoded.model ?? model)")
             throw Abort(.badGateway, reason: "AI service returned no result.")
@@ -329,7 +462,7 @@ struct DefaultOpenAIChatClient: OpenAIChatClient {
                 "ai_completion_empty finish_reason=\(finishReason) model=\(responseModel)"
             )
         }
-        return choice.message
+        return Completion(message: choice.message, finishReason: choice.finishReason)
     }
 }
 

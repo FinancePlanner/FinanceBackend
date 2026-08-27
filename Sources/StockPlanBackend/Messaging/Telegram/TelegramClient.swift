@@ -24,29 +24,94 @@ struct TelegramClient: MessagingTransport {
         // A redelivery already produced this answer once.
         guard !message.silent else { return }
 
-        let parts = TelegramFormat.split(message.text)
+        let parts = TelegramFormat.htmlChunks(message.text)
+        var delivered = 0
+        var lastFailure: (any Error)?
+
         for (index, part) in parts.enumerated() {
             let isLast = index == parts.count - 1
-            var body: [String: TelegramValue] = [
-                "chat_id": .string(chatID),
-                "text": .string(TelegramFormat.html(part)),
-                "parse_mode": .string("HTML"),
-            ]
             // Buttons belong on the final chunk; on an earlier one they would
             // scroll away above the rest of the answer.
-            if isLast, !message.options.isEmpty {
-                body["reply_markup"] = .raw(inlineKeyboard(message.options))
+            let keyboard = isLast && !message.options.isEmpty
+                ? inlineKeyboard(message.options)
+                : nil
+            do {
+                try await sendChunk(chatID: chatID, part: part, keyboard: keyboard, req: req)
+                delivered += 1
+            } catch {
+                // Keep going. A gap in the middle of an answer is bad; silently
+                // dropping everything after the first bad chunk — which is what
+                // aborting the loop did — reads to the user as a reply that
+                // simply stops, indistinguishable from the model being cut off.
+                lastFailure = error
+                req.logger.error(
+                    "telegram_send_chunk_failed chunk=\(index + 1)/\(parts.count) \(describe(error))"
+                )
             }
+        }
+
+        guard delivered > 0 else {
+            // Nothing arrived at all, so let the caller record a real failure
+            // rather than reporting a success the user never saw.
+            throw lastFailure ?? TelegramError.api("sendMessage delivered nothing")
+        }
+        // The keyboard rides on the last chunk, so losing that chunk would strip
+        // the Confirm/Cancel buttons off a pending write action.
+        if lastFailure != nil, !message.options.isEmpty, delivered < parts.count {
+            try? await sendChunk(
+                chatID: chatID,
+                part: "Choose an option to continue.",
+                keyboard: inlineKeyboard(message.options),
+                req: req
+            )
+        }
+    }
+
+    /// One chunk, with the retries Telegram's own failures call for.
+    private func sendChunk(chatID: String, part: String, keyboard: String?, req: Request) async throws {
+        var body: [String: TelegramValue] = [
+            "chat_id": .string(chatID),
+            "text": .string(TelegramFormat.html(part)),
+            "parse_mode": .string("HTML"),
+        ]
+        if let keyboard {
+            body["reply_markup"] = .raw(keyboard)
+        }
+
+        for attempt in 0 ..< 3 {
             do {
                 try await call("sendMessage", body: body, req: req)
-            } catch {
-                // Telegram rejects the whole message on one unsupported tag.
-                // Losing the formatting beats losing the answer.
-                req.logger.warning("telegram refused formatted text; resending it plain")
-                body["parse_mode"] = nil
-                body["text"] = .string(TelegramFormat.plain(part))
-                try await call("sendMessage", body: body, req: req)
+                return
+            } catch let error as TelegramError {
+                switch error.retryStrategy {
+                case let .waitAndRetry(seconds) where attempt < 2:
+                    // Flood control. The turn already has its own ceiling, so a
+                    // bounded wait here cannot wedge anything.
+                    req.logger.warning("telegram_rate_limited retry_after=\(seconds)")
+                    try await Task.sleep(for: .seconds(min(seconds, 30)))
+                case .resendPlain where body["parse_mode"] != nil:
+                    // Telegram rejects the whole message on one unsupported tag.
+                    // Losing the formatting beats losing the answer.
+                    req.logger.warning("telegram_refused_html \(describe(error)); resending plain")
+                    body["parse_mode"] = nil
+                    body["text"] = .string(TelegramFormat.plain(part))
+                default:
+                    throw error
+                }
             }
+        }
+        throw TelegramError.api("sendMessage exhausted its retries")
+    }
+
+    /// Errors reach the user's chat by way of `MessagingService`, so the detail
+    /// belongs in the log where it can be read without leaking to them.
+    private func describe(_ error: any Error) -> String {
+        guard let telegram = error as? TelegramError else { return "error=\(type(of: error))" }
+        switch telegram {
+        case let .api(failure):
+            return "error_code=\(failure.errorCode.map(String.init) ?? "none") description=\(failure.description)"
+        case let .http(status):
+            return "http_status=\(status)"
         }
     }
 
@@ -104,20 +169,74 @@ struct TelegramClient: MessagingTransport {
     enum TelegramError: Error {
         /// Never carries the URL: the bot token lives in the path, and an error
         /// string ends up in logs.
-        case api(String)
+        case api(APIFailure)
         case http(UInt)
+
+        static func api(_ description: String) -> TelegramError {
+            .api(APIFailure(description: description, errorCode: nil, retryAfter: nil))
+        }
+
+        /// What to do about it, rather than making each call site re-read the
+        /// description. Telegram signals all three of these the same way.
+        enum RetryStrategy: Equatable {
+            case waitAndRetry(seconds: Int)
+            case resendPlain
+            case giveUp
+        }
+
+        var retryStrategy: RetryStrategy {
+            guard case let .api(failure) = self else { return .giveUp }
+            if failure.errorCode == 429 {
+                return .waitAndRetry(seconds: failure.retryAfter ?? 1)
+            }
+            // 400 covers both a bad tag and an over-long message; the plain
+            // resend is shorter as well as tag-free, so it addresses both.
+            if failure.errorCode == 400 {
+                return .resendPlain
+            }
+            return .giveUp
+        }
+    }
+
+    struct APIFailure: Sendable {
+        let description: String
+        let errorCode: Int?
+        let retryAfter: Int?
     }
 
     @discardableResult
     private func call(_ method: String, body: [String: TelegramValue], req: Request) async throws -> ByteBuffer {
+        // A plain `JSONDecoder` on purpose. The global `JSONDecoder.backendAPI`
+        // camel-cases snake_case keys before `CodingKeys` lookup, which would
+        // silently nil out `error_code` and `retry_after` and leave the rate
+        // limit path permanently blind.
         struct Envelope: Decodable {
+            struct Parameters: Decodable {
+                let retryAfter: Int?
+
+                enum CodingKeys: String, CodingKey {
+                    case retryAfter = "retry_after"
+                }
+            }
+
             let ok: Bool
             let description: String?
+            let errorCode: Int?
+            let parameters: Parameters?
+
+            enum CodingKeys: String, CodingKey {
+                case ok, description, parameters
+                case errorCode = "error_code"
+            }
         }
         let buffer = try await post(method: method, body: body, req: req)
         let envelope = try JSONDecoder().decode(Envelope.self, from: Data(buffer: buffer))
         guard envelope.ok else {
-            throw TelegramError.api(envelope.description ?? "\(method) failed")
+            throw TelegramError.api(APIFailure(
+                description: envelope.description ?? "\(method) failed",
+                errorCode: envelope.errorCode,
+                retryAfter: envelope.parameters?.retryAfter
+            ))
         }
         return buffer
     }
@@ -153,6 +272,19 @@ struct TelegramClient: MessagingTransport {
 ///
 /// The Bot API takes heterogeneous objects that `Codable` models awkwardly, and
 /// `[String: Any]` is not `Sendable`.
+private func escapeScalar(_ scalar: Unicode.Scalar) -> String {
+    switch scalar {
+    case "\"": "\\\""
+    case "\\": "\\\\"
+    case "\n": "\\n"
+    case "\r": "\\r"
+    case "\t": "\\t"
+    default: scalar.value < 0x20
+        ? String(format: "\\u%04x", scalar.value)
+        : String(scalar)
+    }
+}
+
 enum TelegramValue {
     case string(String)
     /// Pre-encoded JSON, inserted verbatim.
@@ -169,7 +301,12 @@ enum TelegramValue {
             guard let data = try? JSONSerialization.data(withJSONObject: [value], options: []),
                   let array = String(data: data, encoding: .utf8),
                   array.count >= 2
-            else { return "\"\"" }
+            else {
+                // A Swift String is always valid Unicode, so this is effectively
+                // unreachable — but posting an empty message would be a silent
+                // wrong answer, where an escaped literal is at least legible.
+                return "\"" + value.unicodeScalars.map(escapeScalar).joined() + "\""
+            }
             return String(array.dropFirst().dropLast())
         case let .raw(value):
             return value

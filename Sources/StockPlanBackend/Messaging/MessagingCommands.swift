@@ -39,7 +39,7 @@ enum MessagingCommands {
     }
 
     static let helpText = """
-    Ask me about your spending, portfolio, budget or the markets — the same assistant that lives in the Norviq app, and the same conversation.
+    I'm Q. Ask me about your spending, portfolio, budget or the markets — the same assistant that lives in the Norviq app, and the same conversation. "Hey Q" works, but you don't need it here.
 
     I can also propose changes, like logging an expense. I never apply one without you tapping Confirm first.
 

@@ -51,7 +51,13 @@ struct OpenAIVisionReceiptOCRProvider: ReceiptOCRProvider {
             throw Abort(.badGateway, reason: "Receipt OCR is temporarily unavailable. Please try again.")
         }
 
-        let decoded = try response.content.decode(VisionResponse.self)
+        // See `DefaultOpenAIChatClient.decodeProviderJSON`: third-party payloads must not
+        // go through the global API decoder, which eats explicitly mapped snake_case keys.
+        let decoded = try DefaultOpenAIChatClient.decodeProviderJSON(
+            VisionResponse.self,
+            from: response,
+            logger: req.logger
+        )
         guard
             let jsonText = decoded.choices.first?.message.content,
             let jsonData = jsonText.data(using: .utf8),

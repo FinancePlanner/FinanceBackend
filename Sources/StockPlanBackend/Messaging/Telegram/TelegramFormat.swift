@@ -84,17 +84,74 @@ enum TelegramFormat {
     /// does not produce a trickle of tiny messages.
     static func split(_ text: String, limit: Int = maxMessageCharacters) -> [String] {
         guard !text.isEmpty else { return [] }
-        guard text.count > limit else { return [text] }
+        guard width(text) > limit else { return [text] }
         var parts: [String] = []
         var remaining = Substring(text)
-        while remaining.count > limit {
-            let window = remaining.prefix(limit)
-            let cut = breakPoint(window, minimum: limit / 2)
+        while width(remaining) > limit {
+            let window = prefix(remaining, utf16Limit: limit)
+            // Half of *this* window, not half of `limit`: the two differ once the
+            // text is not all ASCII, and an emoji window would otherwise never
+            // reach the minimum and would always take the mid-word fallback.
+            let cut = breakPoint(window, minimum: window.count / 2)
             parts.append(String(remaining[remaining.startIndex ..< cut]).trimmingCharacters(in: .whitespacesAndNewlines))
             remaining = remaining[cut...].drop(while: { $0 == "\n" || $0 == " " })
         }
         parts.append(String(remaining).trimmingCharacters(in: .whitespacesAndNewlines))
         return parts.filter { !$0.isEmpty }
+    }
+
+    /// Splits into parts whose *rendered* HTML fits a Telegram message.
+    ///
+    /// `split` alone is not enough for two reasons. It measures the raw markdown,
+    /// but what gets posted is `html(part)`, and escaping only ever grows the
+    /// string — one `&` becomes five characters, and `<b>`/`<a href>` add tags on
+    /// top. It also counts in Swift `Character`s, while Telegram counts UTF-16
+    /// code units, so emoji and flags undercount badly.
+    /// A split can still land inside a ``` fence, leaving the opening fence to
+    /// render as literal text in the first chunk. Preferring boundaries outside
+    /// fences would fix it; the answer still arrives intact, so it is left alone.
+    static func htmlChunks(_ markdown: String, limit: Int = maxMessageCharacters) -> [String] {
+        guard !markdown.isEmpty else { return [] }
+        return split(markdown, limit: limit).flatMap { fit($0, limit: limit) }
+    }
+
+    /// Shrinks one part until its rendered form fits.
+    ///
+    /// No fixed safety margin works here: `&` alone expands fivefold, and links
+    /// and tags add more on top, so the only honest approach is to render and
+    /// measure. Halving converges in a handful of rounds and always terminates.
+    private static func fit(_ part: String, limit: Int) -> [String] {
+        guard width(html(part)) > limit else { return [part] }
+        var budget = limit
+        while budget > 16 {
+            budget /= 2
+            let candidates = split(part, limit: budget)
+            if candidates.allSatisfy({ width(html($0)) <= limit }) {
+                return candidates
+            }
+        }
+        return split(part, limit: 16)
+    }
+
+    /// Length in the unit Telegram actually counts.
+    private static func width(_ text: some StringProtocol) -> Int {
+        text.utf16.count
+    }
+
+    /// Longest prefix within `utf16Limit`, walked by `Character` so a chunk can
+    /// never end halfway through a surrogate pair.
+    private static func prefix(_ text: Substring, utf16Limit: Int) -> Substring {
+        var end = text.startIndex
+        var used = 0
+        for index in text.indices {
+            let next = used + width(String(text[index]))
+            if next > utf16Limit {
+                break
+            }
+            used = next
+            end = text.index(after: index)
+        }
+        return text[text.startIndex ..< end]
     }
 
     private static func breakPoint(_ window: Substring, minimum: Int) -> Substring.Index {
