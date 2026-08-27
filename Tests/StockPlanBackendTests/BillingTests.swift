@@ -1190,6 +1190,14 @@ struct BillingTests {
             let research = try #require(body.features.first { $0.key == "advanced_research" })
             #expect(research.available == false)
             #expect(research.requiredPlan == "pro")
+
+            for key in ["ai_insights", "mcp_access", "scenario_planning", "tax_optimization"] {
+                let feature = try #require(body.features.first { $0.key == key })
+                #expect(feature.available == false)
+                #expect(feature.requiredPlan == "pro")
+            }
+            let reports = try #require(body.features.first { $0.key == "reports" })
+            #expect(reports.available == true)
         }
     }
 

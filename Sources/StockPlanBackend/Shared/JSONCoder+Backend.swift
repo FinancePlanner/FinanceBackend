@@ -53,6 +53,20 @@ extension JSONDecoder {
     }
 }
 
+extension JSONDecoder {
+    /// For payloads written by somebody else: AI providers, OAuth providers,
+    /// banking APIs.
+    ///
+    /// `backendAPI` above rewrites every snake_case key to camelCase *before*
+    /// `CodingKeys` lookup, which is right for our own clients and wrong for a
+    /// third-party wire format: a struct that maps `case toolCalls =
+    /// "tool_calls"` explicitly then matches nothing and decodes as nil, with no
+    /// error to notice. Reach for this whenever the JSON was not produced by us.
+    static var externalProvider: JSONDecoder {
+        JSONDecoder()
+    }
+}
+
 extension JSONEncoder {
     static var backendAPI: JSONEncoder {
         let encoder = JSONEncoder.stockPlanShared

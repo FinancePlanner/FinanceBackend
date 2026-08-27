@@ -161,14 +161,14 @@ private struct OpenAIChatRequestBody: Content {
     }
 }
 
-private struct OpenAIChatResponseBody: Content {
+struct OpenAIChatResponseBody: Content {
     var choices: [OpenAIChoice]
     var model: String?
     var provider: String?
     var usage: OpenAIUsage?
 }
 
-private struct OpenAIUsage: Content {
+struct OpenAIUsage: Content {
     struct CompletionDetails: Content {
         var reasoningTokens: Int?
 
@@ -190,7 +190,7 @@ private struct OpenAIUsage: Content {
     }
 }
 
-private struct OpenAIChoice: Content {
+struct OpenAIChoice: Content {
     var message: OpenAIMessage
     var finishReason: String?
 
@@ -263,6 +263,45 @@ struct DefaultOpenAIChatClient: OpenAIChatClient {
         self.timeout = timeout
     }
 
+    /// Decodes a provider chat completion.
+    ///
+    /// Deliberately not `response.content.decode`: that routes through
+    /// `ContentConfiguration.global`, whose `JSONDecoder.backendAPI` key strategy
+    /// camel-cases every snake_case key *before* `CodingKeys` lookup. Our wire
+    /// structs map those keys explicitly, so `tool_calls`, `finish_reason` and
+    /// the whole `usage` block silently decoded as nil — the assistant's tool
+    /// calls were dropped and truncation was undetectable. Same trap, and the
+    /// same fix, as `oauthDecodeProviderJSON` in `OAuthProviderClient`.
+    static func decodeChatResponse(
+        _ response: ClientResponse,
+        logger: Logger? = nil
+    ) throws -> OpenAIChatResponseBody {
+        try decodeProviderJSON(OpenAIChatResponseBody.self, from: response, logger: logger)
+    }
+
+    /// Shared by every AI-provider payload we decode. See the note above for why
+    /// this exists rather than `response.content.decode`.
+    static func decodeProviderJSON<T: Decodable>(
+        _ type: T.Type,
+        from response: ClientResponse,
+        logger: Logger? = nil
+    ) throws -> T {
+        guard
+            let buffer = response.body,
+            let data = buffer.getData(at: buffer.readerIndex, length: buffer.readableBytes)
+        else {
+            throw Abort(.badGateway, reason: "AI service returned no result.")
+        }
+        do {
+            return try JSONDecoder.externalProvider.decode(type, from: data)
+        } catch {
+            // `MessagingService` sends `abort.reason` straight to the Telegram
+            // user, so the decoding detail belongs in the log, never the sentence.
+            logger?.error("ai_provider_undecodable type=\(type) error=\(error)")
+            throw Abort(.badGateway, reason: "AI service returned an unreadable response.")
+        }
+    }
+
     func chat(
         messages: [OpenAIMessage],
         tools: [OpenAITool],
@@ -296,7 +335,7 @@ struct DefaultOpenAIChatClient: OpenAIChatClient {
             throw OpenAIChatUpstreamError(upstreamStatus: response.status.code)
         }
 
-        let decoded = try response.content.decode(OpenAIChatResponseBody.self)
+        let decoded = try Self.decodeChatResponse(response, logger: req.logger)
         guard let choice = decoded.choices.first else {
             req.logger.warning("ai_completion_empty_choices provider=\(decoded.provider ?? "unknown") model=\(decoded.model ?? model)")
             throw Abort(.badGateway, reason: "AI service returned no result.")
