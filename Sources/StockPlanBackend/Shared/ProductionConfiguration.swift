@@ -11,6 +11,12 @@ enum ProductionConfiguration {
             password: Environment.get("DATABASE_PASSWORD")
         )
         try validateRequiredSecret(Environment.get("REVENUECAT_API_KEY"), name: "REVENUECAT_API_KEY")
+        // Without Redis, `RateLimitMiddleware` and `AIDailyCap` both fail closed
+        // and every rate-limited route answers 503 for the pod's whole life.
+        // A malformed URL already fails the boot in `ConfigureBootstrap`; a
+        // missing one used to only warn, which is how production served 503s on
+        // every /v1/ai/* route for three days.
+        try validateRequiredSecret(Environment.get("REDIS_URL"), name: "REDIS_URL")
 
         let webhookSecret = (Environment.get("REVENUECAT_WEBHOOK_SECRET")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "")
         let hmacSecret = (Environment.get("REVENUECAT_HMAC_SECRET")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "")

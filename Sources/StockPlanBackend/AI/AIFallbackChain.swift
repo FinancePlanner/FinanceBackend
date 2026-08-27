@@ -95,6 +95,15 @@ struct FallbackChatClient: OpenAIChatClient {
                     responseFormat: responseFormat,
                     on: req
                 )
+                // A 200 carrying neither text nor a tool call is not a success
+                // any caller can use, but it is not thrown either, so without
+                // this the chain hands it straight back and the free rungs
+                // below are never consulted. Observed in production as
+                // `ai_completion_empty` on the paid primary while
+                // `ai_fallback_switch` stayed at zero.
+                if message.hasNoUsableOutput {
+                    throw OpenAIChatUnusableResponseError(model: rung.tier.model)
+                }
                 if failures > 0 {
                     req.logger.warning("ai_fallback_used", metadata: [
                         "tier": "\(rung.tier.label)",
@@ -148,6 +157,9 @@ struct FallbackChatClient: OpenAIChatClient {
     /// Short, log-safe description of why a rung was demoted.
     private static func statusLabel(_ error: (any Error)?) -> String {
         guard let error else { return "none" }
+        if error is OpenAIChatUnusableResponseError {
+            return "200_no_usable_output"
+        }
         if let upstream = error as? OpenAIChatUpstreamError {
             if upstream.isOutOfCredits {
                 return "402_out_of_credits"

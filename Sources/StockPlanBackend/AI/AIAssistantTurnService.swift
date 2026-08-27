@@ -36,13 +36,39 @@ struct AIAssistantTurnService {
         })
 
         let context = AIToolContext(userId: userId)
-        for _ in 0 ..< maxToolRounds {
-            let message = try await client.chat(
+        for round in 0 ..< maxToolRounds {
+            var message = try await client.chat(
                 messages: messages,
                 tools: Self.tools,
                 responseFormat: nil,
                 on: req
             )
+            // Some models answer the *intent* of a data question in prose —
+            // "Let me check your latest expenses for you." — and call nothing,
+            // which the loop below would return verbatim as the final answer.
+            // Observed in production on 2026-08-27.
+            //
+            // Nudged with a prompt rather than `tool_choice: "required"`:
+            // probing OpenRouter on 2026-08-27 showed both free nemotron rungs
+            // answer a forced tool choice with an empty `tool_calls` and the
+            // call pasted into `content` as raw JSON, which is worse than the
+            // preamble it replaces. A plain instruction works on every rung,
+            // and is the technique the post-budget final answer already uses
+            // below.
+            if message.toolCalls?.isEmpty != false, round == 0,
+               Self.looksLikeUnfulfilledIntent(message.content)
+            {
+                req.logger.warning("ai_turn_no_tool_call nudging for a tool call")
+                var nudged = messages
+                nudged.append(OpenAIMessage(role: "assistant", content: message.content))
+                nudged.append(OpenAIMessage(role: "user", content: Self.toolNudgePrompt))
+                message = try await client.chat(
+                    messages: nudged,
+                    tools: Self.tools,
+                    responseFormat: nil,
+                    on: req
+                )
+            }
             guard let calls = message.toolCalls, !calls.isEmpty else {
                 return Result(text: Self.responseText(message.content), pendingAction: nil)
             }
@@ -115,6 +141,38 @@ struct AIAssistantTurnService {
     }
 
     private struct ToolError: Encodable { let error: String }
+
+    /// Turns an announced lookup into a performed one.
+    ///
+    /// Phrased as the user replying, because the announcement is already in
+    /// the transcript as the assistant's turn; a second assistant message
+    /// would be prefill, whose support varies by provider.
+    private static let toolNudgePrompt = """
+    Don't tell me you are going to look — do it now. Call the tool that \
+    reads the data you just said you would check, then answer from what it \
+    returns.
+    """
+
+    /// Whether a tool-less reply reads as an announcement of a lookup rather
+    /// than an answer.
+    ///
+    /// Deliberately narrow. A direct answer with no tool call is legitimate —
+    /// a greeting, or a general question the model can answer from its own
+    /// knowledge — and must not be retried, because a forced `tool_choice`
+    /// would make it call something irrelevant. Only the announcing phrasings
+    /// qualify, and only when the reply is short enough to be a preamble
+    /// rather than a real answer that happens to contain one.
+    static func looksLikeUnfulfilledIntent(_ content: String?) -> Bool {
+        let text = content?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        guard !text.isEmpty, text.count <= 200 else { return false }
+        let openers = [
+            "let me check", "let me look", "let me pull", "let me fetch",
+            "let me take a look", "i'll check", "i will check",
+            "i'll look", "i will look", "i'll fetch", "i will fetch",
+            "i'll pull", "i will pull", "checking your", "one moment",
+        ]
+        return openers.contains { text.contains($0) }
+    }
 
     private static func responseText(_ content: String?) -> String {
         let text = content?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""

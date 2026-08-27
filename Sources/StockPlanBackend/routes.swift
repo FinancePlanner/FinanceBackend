@@ -190,7 +190,19 @@ private func databaseHealthCheck(_ req: Request) async -> HealthCheck {
 private func redisHealthCheck(_ req: Request) async -> HealthCheck {
     let start = DispatchTime.now()
     guard req.application.redis.configuration != nil else {
-        return HealthCheck(status: "skipped", message: "REDIS_URL is not configured.", latencyMs: nil)
+        // Not a neutral "skipped" in production: with no Redis, every
+        // rate-limited route answers 503 (`RateLimitMiddleware`) and the AI
+        // daily cap fails closed (`AIDailyCap`), yet the pod reported `ready`
+        // for three days. `degraded` rather than `unhealthy` on purpose — this
+        // is a single replica with strategy `Recreate`, so failing the
+        // readiness probe would take the whole API down over a fault that only
+        // affects some route groups.
+        let unconfiguredStatus = req.application.environment == .production ? "degraded" : "skipped"
+        return HealthCheck(
+            status: unconfiguredStatus,
+            message: "REDIS_URL is not configured.",
+            latencyMs: nil
+        )
     }
     do {
         _ = try await req.application.redis.send(command: "PING", with: [])
