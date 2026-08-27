@@ -86,7 +86,7 @@ enum AIAssistantClientResolver {
     /// they are not user-attributed conversation turns.
     static func resolve(userId: UUID, on req: Request) async throws -> ResolvedAssistantClient {
         guard AICredentialSettings.enabled else {
-            return try await platformClient(userId: userId, on: req)
+            return await platformClient(userId: userId, on: req)
         }
 
         let candidates = try await UserAIProviderCredential.query(on: req.db)
@@ -95,12 +95,12 @@ enum AIAssistantClientResolver {
             .all()
 
         guard let row = candidates.first(where: { $0.isUsable }), let provider = row.providerKind else {
-            return try await platformClient(userId: userId, on: req)
+            return await platformClient(userId: userId, on: req)
         }
 
         guard req.tokenEncryptionService.isEncrypted(row.apiKeyEncrypted) else {
             req.logger.error("ai_credential_not_encrypted user=\(userId) provider=\(row.provider)")
-            return try await platformClient(userId: userId, on: req)
+            return await platformClient(userId: userId, on: req)
         }
         let apiKey = try req.tokenEncryptionService.decrypt(row.apiKeyEncrypted, context: .aiProvider)
 
@@ -130,38 +130,9 @@ enum AIAssistantClientResolver {
     private static func platformClient(
         userId: UUID,
         on req: Request
-    ) async throws -> ResolvedAssistantClient {
-        guard let router = req.application.aiModelRouter else {
-            return ResolvedAssistantClient(client: req.application.openAIChatClient, credential: nil)
-        }
-
-        let plan = await plan(for: userId, on: req)
-        req.logger.debug("ai_plan_route", metadata: [
-            "plan": "\(plan.rawValue)",
-            "lead_model": "\(router.tiers(for: plan).first?.model ?? "unknown")",
-        ])
-        return ResolvedAssistantClient(client: router.client(for: plan), credential: nil, plan: plan)
-    }
-
-    /// Reads the entitlement directly rather than going through
-    /// `billingContextService`, which fans out eight queries per call to build a
-    /// full billing page. One boolean is all the router needs.
-    ///
-    /// Fails closed to `.free`: a lookup outage must not start handing out paid
-    /// inference to everyone.
-    private static func plan(for userId: UUID, on req: Request) async -> AIPlanTier {
-        do {
-            let snapshot = try await req.application.entitlementResolver.resolve(
-                userId: userId, on: req.db
-            )
-            return snapshot.isPro ? .pro : .free
-        } catch {
-            req.logger.warning("ai_plan_lookup_failed", metadata: [
-                "user": "\(userId)",
-                "error": "\(String(reflecting: error))",
-            ])
-            return .free
-        }
+    ) async -> ResolvedAssistantClient {
+        let routed = await AIPlanRouting.client(for: userId, on: req)
+        return ResolvedAssistantClient(client: routed.client, credential: nil, plan: routed.plan)
     }
 
     /// Records the outcome of a turn on the credential so the settings page can

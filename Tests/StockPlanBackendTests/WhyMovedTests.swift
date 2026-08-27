@@ -286,6 +286,64 @@ struct WhyMovedTests {
 
     // MARK: - Self-contained harness (mirrors StockPlanBackendTests.withApp)
 
+    // MARK: - Plan routing
+
+    /// This endpoint has no Pro gate, so a free user reaches it. Reaching it must
+    /// not put them on a metered model.
+    @Test("A free user's why-moved summary comes from the free chain, not the paid one")
+    func whyMovedFreeUserStaysOnFreeChain() async throws {
+        // The local `.env` ships BYPASS_BILLING=true, which resolves every user to
+        // Pro. Without this the test would pass for the wrong reason.
+        setenv("BYPASS_BILLING", "false", 1)
+        defer { unsetenv("BYPASS_BILLING") }
+
+        try await withAppForWhyMoved { app, token, state in
+            await state.setSummaries([summary("AAPL", value: 50000, dayPct: 3.0)])
+            // Stubbed rather than driven through the database: the local `.env`
+            // ships BYPASS_BILLING=true, which resolves every user to Pro, and
+            // this test must not depend on the developer's env either way.
+            app.entitlementResolver = FixedEntitlementResolver(level: "free")
+            app.aiModelRouter = twoChainRouter()
+
+            try await app.testing().test(.GET, "v1/dashboard/why-moved", beforeRequest: { req in
+                req.headers.bearerAuthorization = .init(token: token)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let body = try res.content.decode(WhyMovedResponse.self)
+                #expect(body.aiSummary?.text == "served by the free chain")
+            })
+            // The paid chain was never asked.
+            #expect(await state.chatCalls == 0)
+        }
+    }
+
+    @Test("A Pro user's why-moved summary comes from the pro chain")
+    func whyMovedProUserUsesProChain() async throws {
+        setenv("BYPASS_BILLING", "false", 1)
+        defer { unsetenv("BYPASS_BILLING") }
+
+        try await withAppForWhyMoved { app, token, state in
+            await state.setSummaries([summary("AAPL", value: 50000, dayPct: 3.0)])
+            app.entitlementResolver = FixedEntitlementResolver(level: "pro")
+            app.aiModelRouter = twoChainRouter()
+
+            try await app.testing().test(.GET, "v1/dashboard/why-moved", beforeRequest: { req in
+                req.headers.bearerAuthorization = .init(token: token)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let body = try res.content.decode(WhyMovedResponse.self)
+                #expect(body.aiSummary?.text == "served by the pro chain")
+            })
+        }
+    }
+
+    private func twoChainRouter() -> AIModelRouter {
+        AIModelRouter(
+            free: FixedJSONChatClient(text: "served by the free chain"),
+            pro: FixedJSONChatClient(text: "served by the pro chain")
+        )
+    }
+
     private func withAppForWhyMoved(
         _ body: (Application, String, WhyMovedStubState) async throws -> Void
     ) async throws {
@@ -331,5 +389,28 @@ struct WhyMovedTests {
             throw Abort(.internalServerError, reason: "Auth register did not return a token")
         }
         return token
+    }
+}
+
+/// Returns the shape `loadAISummary` decodes, tagged so a test can tell which
+/// chain answered.
+private struct FixedJSONChatClient: OpenAIChatClient {
+    let text: String
+
+    func chat(
+        messages _: [OpenAIMessage],
+        tools _: [OpenAITool],
+        responseFormat _: String?,
+        on _: Request
+    ) async throws -> OpenAIMessage {
+        OpenAIMessage(role: "assistant", content: #"{"text": "\#(text)"}"#)
+    }
+}
+
+private struct FixedEntitlementResolver: EntitlementResolver {
+    let level: String
+
+    func resolve(userId: UUID, on _: any Database) async throws -> EntitlementSnapshot {
+        EntitlementSnapshot(userId: userId, level: level)
     }
 }

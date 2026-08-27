@@ -186,8 +186,13 @@ struct DefaultWhyMovedService: WhyMovedService {
             OpenAIMessage(role: "system", content: AIPrompt.system),
             OpenAIMessage(role: "user", content: AIPrompt.whyMovedUserPrompt(factsJSON: facts)),
         ]
+        // Plan-routed, not on `app.openAIChatClient`. This endpoint has no Pro
+        // gate, so a free user reaches it — and reaching it must not spend
+        // credits. The per-user cache key above keeps the two plans' answers
+        // from crossing over.
+        let routed = await AIPlanRouting.client(for: userId, on: req)
         do {
-            let message = try await req.application.openAIChatClient.chat(
+            let message = try await routed.client.chat(
                 messages: messages, tools: [], responseFormat: "json_object", on: req
             )
             guard

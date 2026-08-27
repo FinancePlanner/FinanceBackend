@@ -116,3 +116,58 @@ func makeAIModelRouter(_ app: Application) -> AIModelRouter? {
         proTiers: proTiers
     )
 }
+
+/// The one place a user-attributed turn running on *Norviq's* key picks its
+/// chain.
+///
+/// Every free-reachable LLM surface goes through here rather than reaching for
+/// `app.openAIChatClient` directly. That client is the Pro chain, so a call site
+/// that grabs it serves a free user a metered model — which is the exact bill
+/// this routing exists to prevent. Keeping the decision in one function means a
+/// new surface has one obvious thing to call.
+///
+/// Not for background or aggregate work: with no requesting user there is no plan
+/// to read, and those paths stay on `app.openAIChatClient` deliberately.
+enum AIPlanRouting {
+    /// Reads the entitlement directly rather than going through
+    /// `billingContextService`, which fans out eight queries per call to build a
+    /// full billing page. One boolean is all the router needs.
+    ///
+    /// Fails closed to `.free`: a lookup outage must not start handing out paid
+    /// inference to everyone.
+    static func plan(for userId: UUID, on req: Request) async -> AIPlanTier {
+        do {
+            let snapshot = try await req.application.entitlementResolver.resolve(
+                userId: userId, on: req.db
+            )
+            return snapshot.isPro ? .pro : .free
+        } catch {
+            req.logger.warning("ai_plan_lookup_failed", metadata: [
+                "user": "\(userId)",
+                "error": "\(String(reflecting: error))",
+            ])
+            return .free
+        }
+    }
+
+    /// The chain this user is entitled to, plus which plan chose it.
+    ///
+    /// The plan is nil when routing is off or no router was built, in which case
+    /// the caller lands on the single legacy chain exactly as it did before
+    /// routing existed.
+    static func client(
+        for userId: UUID,
+        on req: Request
+    ) async -> (client: any OpenAIChatClient, plan: AIPlanTier?) {
+        guard let router = req.application.aiModelRouter else {
+            return (req.application.openAIChatClient, nil)
+        }
+
+        let plan = await plan(for: userId, on: req)
+        req.logger.debug("ai_plan_route", metadata: [
+            "plan": "\(plan.rawValue)",
+            "lead_model": "\(router.tiers(for: plan).first?.model ?? "unknown")",
+        ])
+        return (router.client(for: plan), plan)
+    }
+}

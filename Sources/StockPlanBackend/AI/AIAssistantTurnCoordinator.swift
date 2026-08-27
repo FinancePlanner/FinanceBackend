@@ -154,7 +154,10 @@ enum AIAssistantTurnCoordinator {
             // credential the user asked us to use, so it is off by default.
             if AICredentialSettings.fallbackToNorviqKey {
                 req.logger.warning("ai_credential_fallback provider=\(credential.provider)")
-                return try await AIAssistantTurnService(client: req.application.openAIChatClient)
+                // Plan-routed: moving the bill to Norviq is bad enough without
+                // also moving a free user onto the paid chain.
+                let routed = await AIPlanRouting.client(for: userId, on: req)
+                return try await AIAssistantTurnService(client: routed.client)
                     .generate(userId: userId, conversation: conversation, userMessage: content, req: req)
             }
             // 424 reads exactly right: your upstream dependency failed, not ours.
