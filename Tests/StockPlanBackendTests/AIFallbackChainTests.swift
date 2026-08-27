@@ -39,6 +39,11 @@ private struct CountingChatClient: OpenAIChatClient {
         case succeeding(marker: String)
         case upstream(status: UInt)
         case transport
+        /// 200 with neither content nor a tool call — the failure the chain
+        /// could not see before.
+        case blank(content: String?)
+        /// 200 with no content but a real tool call: legitimate, must not demote.
+        case toolCallOnly(name: String)
     }
 
     let behaviour: Behaviour
@@ -60,6 +65,18 @@ private struct CountingChatClient: OpenAIChatClient {
             throw OpenAIChatUpstreamError(upstreamStatus: status)
         case .transport:
             throw Abort(.internalServerError, reason: "socket closed")
+        case let .blank(content):
+            return OpenAIMessage(role: "assistant", content: content)
+        case let .toolCallOnly(name):
+            return OpenAIMessage(
+                role: "assistant",
+                content: nil,
+                toolCalls: [OpenAIToolCall(
+                    id: "call_1",
+                    type: "function",
+                    function: OpenAIFunctionCall(name: name, arguments: "{}")
+                )]
+            )
         }
     }
 }
@@ -134,6 +151,102 @@ struct AIFallbackChainTests {
             #expect(message.content == "free")
             #expect(primaryCalls.count == 1)
             #expect(fallbackCalls.count == 1)
+        }
+    }
+
+    @Test("A 200 with neither content nor a tool call demotes to the next rung")
+    func blankResponseFallsThrough() async throws {
+        try await withRequest { req in
+            let primaryCalls = CallCounter()
+            let fallbackCalls = CallCounter()
+            let client = FallbackChatClient(rungs: [
+                .init(tier: tier("primary"),
+                      client: CountingChatClient(behaviour: .blank(content: "   \n "), counter: primaryCalls)),
+                .init(tier: tier("free"),
+                      client: CountingChatClient(behaviour: .succeeding(marker: "free"), counter: fallbackCalls)),
+            ])
+
+            let message = try await client.chat(messages: [], tools: [], responseFormat: nil, on: req)
+
+            #expect(message.content == "free")
+            #expect(primaryCalls.count == 1)
+            #expect(fallbackCalls.count == 1)
+        }
+    }
+
+    @Test("A nil-content response with no tool call also demotes")
+    func nilContentFallsThrough() async throws {
+        try await withRequest { req in
+            let fallbackCalls = CallCounter()
+            let client = FallbackChatClient(rungs: [
+                .init(tier: tier("primary"),
+                      client: CountingChatClient(behaviour: .blank(content: nil), counter: CallCounter())),
+                .init(tier: tier("free"),
+                      client: CountingChatClient(behaviour: .succeeding(marker: "free"), counter: fallbackCalls)),
+            ])
+
+            let message = try await client.chat(messages: [], tools: [], responseFormat: nil, on: req)
+
+            #expect(message.content == "free")
+            #expect(fallbackCalls.count == 1)
+        }
+    }
+
+    @Test("Blank content with a tool call is a success and does not demote")
+    func toolCallWithoutProseIsNotDemoted() async throws {
+        try await withRequest { req in
+            let fallbackCalls = CallCounter()
+            let client = FallbackChatClient(rungs: [
+                .init(tier: tier("primary"),
+                      client: CountingChatClient(behaviour: .toolCallOnly(name: "get_expenses"), counter: CallCounter())),
+                .init(tier: tier("free"),
+                      client: CountingChatClient(behaviour: .succeeding(marker: "free"), counter: fallbackCalls)),
+            ])
+
+            let message = try await client.chat(messages: [], tools: [], responseFormat: nil, on: req)
+
+            #expect(message.toolCalls?.first?.function.name == "get_expenses")
+            #expect(message.content == nil)
+            #expect(fallbackCalls.count == 0, "a tool call is a usable answer")
+        }
+    }
+
+    @Test("Prose with no tool call is a success and does not demote")
+    func proseWithoutToolCallIsNotDemoted() async throws {
+        try await withRequest { req in
+            let fallbackCalls = CallCounter()
+            let client = FallbackChatClient(rungs: [
+                .init(tier: tier("primary"),
+                      client: CountingChatClient(behaviour: .succeeding(marker: "US inflation is 3.1%."), counter: CallCounter())),
+                .init(tier: tier("free"),
+                      client: CountingChatClient(behaviour: .succeeding(marker: "free"), counter: fallbackCalls)),
+            ])
+
+            let message = try await client.chat(messages: [], tools: [], responseFormat: nil, on: req)
+
+            #expect(message.content == "US inflation is 3.1%.")
+            #expect(fallbackCalls.count == 0, "a direct answer needs no tool call")
+        }
+    }
+
+    @Test("A chain of only blank responses reports the badGateway surface")
+    func allBlankExhaustsTheChain() async throws {
+        try await withRequest { req in
+            let client = FallbackChatClient(rungs: [
+                .init(tier: tier("primary"),
+                      client: CountingChatClient(behaviour: .blank(content: ""), counter: CallCounter())),
+                .init(tier: tier("free"),
+                      client: CountingChatClient(behaviour: .blank(content: nil), counter: CallCounter())),
+            ])
+
+            await #expect(throws: (any Error).self) {
+                _ = try await client.chat(messages: [], tools: [], responseFormat: nil, on: req)
+            }
+            do {
+                _ = try await client.chat(messages: [], tools: [], responseFormat: nil, on: req)
+            } catch let error as any AbortError {
+                #expect(error.status == .badGateway)
+            }
         }
     }
 

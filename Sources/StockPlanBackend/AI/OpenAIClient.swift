@@ -213,6 +213,35 @@ protocol OpenAIChatClient: Sendable {
     ) async throws -> OpenAIMessage
 }
 
+extension OpenAIMessage {
+    /// No text and no tool call — nothing a caller can show or act on.
+    ///
+    /// A provider returning this answers 200, so it is not an error any
+    /// `catch` would see; the chain has to inspect the payload to notice.
+    /// Blank content *with* a tool call is normal and is not this.
+    var hasNoUsableOutput: Bool {
+        content?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false
+            && toolCalls?.isEmpty != false
+    }
+}
+
+/// A 200 from the chat provider whose payload is unusable: no content and no
+/// tool call.
+///
+/// Not an upstream *status* failure, so it is separate from
+/// `OpenAIChatUpstreamError`. Carries the same `.badGateway` surface, so if it
+/// escapes a single-rung deployment the caller sees what it always saw.
+struct OpenAIChatUnusableResponseError: Error, AbortError {
+    let model: String
+    var status: HTTPResponseStatus {
+        .badGateway
+    }
+
+    var reason: String {
+        "AI service is unavailable. Please try again later."
+    }
+}
+
 /// A non-200 from the chat provider, carrying the status so callers can tell an
 /// auth failure apart from an outage.
 ///
