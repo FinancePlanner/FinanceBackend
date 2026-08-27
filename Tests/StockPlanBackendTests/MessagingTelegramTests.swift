@@ -330,6 +330,39 @@ struct AssistantAddressTests {
         #expect(AssistantAddress.strip("Q???") == "Q???")
     }
 
+    @Test("Addressing Q is not mistaken for consent")
+    func addressIsNotConsent() {
+        // "ok" and "okay" open a sentence to Q and are also approvalWords, so
+        // the address has to come off before the confirmation parser sees the
+        // text. Otherwise "Ok Q, what did I spend?" approves a pending action.
+        for text in ["Ok Q, what did I spend?", "Okay Q, show me my budget"] {
+            #expect(MessagingService.parseConfirmationAnswer(AssistantAddress.strip(text)) == nil)
+        }
+        // And the raw form is exactly what would have gone wrong.
+        guard case .approveLatest = MessagingService.parseConfirmationAnswer("Ok Q, what did I spend?") else {
+            Issue.record("expected the unstripped form to look like consent"); return
+        }
+    }
+
+    @Test("A real answer still reads as consent once the address is stripped")
+    func addressedConsentStillCounts() {
+        guard case .approveLatest = MessagingService.parseConfirmationAnswer(AssistantAddress.strip("Hey Q, yes")) else {
+            Issue.record("expected an approval"); return
+        }
+        guard case .declineLatest = MessagingService.parseConfirmationAnswer(AssistantAddress.strip("@Q no")) else {
+            Issue.record("expected a decline"); return
+        }
+    }
+
+    @Test("Callback payloads survive the stripper untouched")
+    func callbackPayloadsSurvive() {
+        // TelegramUpdate folds callbackQuery.data into the same text field.
+        let id = UUID()
+        for payload in ["norviq:confirm:\(id.uuidString)", "norviq:decline:\(id.uuidString)"] {
+            #expect(AssistantAddress.strip(payload) == payload)
+        }
+    }
+
     @Test("A greeting on its own is not treated as an address")
     func leavesPlainGreetingsAlone() {
         #expect(AssistantAddress.strip("hey there") == "hey there")

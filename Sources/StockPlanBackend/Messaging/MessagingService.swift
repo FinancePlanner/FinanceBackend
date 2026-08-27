@@ -97,6 +97,20 @@ enum MessagingService {
         userId: UUID,
         req: Request
     ) async throws -> OutboundMessage {
+        // Strip how the user addressed Q before anything else reads the words.
+        //
+        // Order matters: this has to precede parseConfirmationAnswer, which
+        // matches on a bag of words, because "ok" and "okay" are both a way of
+        // opening a sentence to Q and members of approvalWords. Left
+        // unstripped, "Ok Q, what did I spend?" silently approves whatever is
+        // pending instead of reaching the assistant.
+        //
+        // Still safe this late: pairing codes contain Q but are handled in
+        // handleUnlinked, slash commands have already had their pass, and
+        // callback payloads (norviq:confirm:<uuid>) start with "n" so the
+        // stripper leaves them alone.
+        let text = AssistantAddress.strip(inbound.text)
+
         // A confirmation resolves a proposal instead of starting a turn, and
         // costs no quota — the user is answering us, not asking.
         //
@@ -104,7 +118,7 @@ enum MessagingService {
         // counts while something is actually pending: otherwise every casual
         // "ok" or "go on" would be answered with "nothing to confirm" instead
         // of reaching the assistant.
-        if let answer = parseConfirmationAnswer(inbound.text) {
+        if let answer = parseConfirmationAnswer(text) {
             switch answer {
             case .approve, .decline:
                 return try await resolveConfirmation(answer, userId: userId, req: req)
@@ -117,13 +131,10 @@ enum MessagingService {
 
         let conversation = try await resolveConversation(userId: userId, req: req)
         do {
-            // Strip the assistant's name here and nowhere earlier. Pairing
-            // codes contain Q and are handled up in handleUnlinked; commands
-            // and confirmations have both already had their pass by this point.
             let outcome = try await AIAssistantTurnCoordinator.run(
                 userId: userId,
                 conversation: conversation,
-                content: AssistantAddress.strip(inbound.text),
+                content: text,
                 req: req
             )
             guard let pending = outcome.pendingAction else {
