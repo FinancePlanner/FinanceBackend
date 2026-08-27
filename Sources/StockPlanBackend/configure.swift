@@ -223,7 +223,14 @@ public func configure(_ app: Application) async throws {
 
     // AI insights (educational, Pro-gated). Backend proxy to OpenAI; key never
     // leaves the server. Boots disabled when no key is configured.
-    let openAIChatClient = makeOpenAIChatClient(app)
+    // Plan-based routing: free users reach only zero-cost slugs, Pro leads with
+    // the paid model and keeps the free floor beneath it. Nil when
+    // AI_PLAN_ROUTING_ENABLED is off, which restores the single legacy chain.
+    let aiModelRouter = makeAIModelRouter(app)
+    app.aiModelRouter = aiModelRouter
+    // The Pro chain is the system default: background and aggregate work is not
+    // attributed to a user whose plan could pick for it.
+    let openAIChatClient = aiModelRouter?.pro ?? makeOpenAIChatClient(app)
     app.openAIChatClient = openAIChatClient
     app.aiInsightsService = DefaultAIInsightsService(client: openAIChatClient)
     // In-app conversational assistant (Pro-gated, first-party only). Shares the

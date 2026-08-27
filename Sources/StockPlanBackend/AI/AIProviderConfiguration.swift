@@ -28,11 +28,44 @@ struct AIProviderConfiguration: Sendable {
     let maxTokens: Int
     /// Ordered providers tried when the primary fails. Empty when none resolve.
     let fallbacks: [AIProviderTier]
+    /// The free plan's chain. Guaranteed to contain only zero-cost slugs.
+    let freeTiers: [AIProviderTier]
+    /// Paid alternates tried after the primary and before the free floor.
+    let proFallbacks: [AIProviderTier]
     /// Per-request upstream timeout, shared by every rung of the chain.
     let requestTimeout: TimeAmount
 
     var isConfigured: Bool {
         !apiKey.isEmpty && !baseURL.isEmpty && !defaultModel.isEmpty
+    }
+
+    /// The configured primary, or nil when no provider key is set.
+    var primaryTier: AIProviderTier? {
+        guard isConfigured else { return nil }
+        return AIProviderTier(
+            label: "primary-\(provider.rawValue)",
+            apiKey: apiKey,
+            baseURL: baseURL,
+            model: defaultModel,
+            maxTokens: maxTokens,
+            supportsResponseFormat: AIModelCapabilities.supportsResponseFormat(defaultModel)
+        )
+    }
+
+    /// The Pro plan's chain: the paid primary, then any paid alternates, then the
+    /// free floor.
+    ///
+    /// The floor is deliberate. Norviq's OpenRouter account can sit at zero
+    /// balance, and a Pro user hitting a 402 should get a weaker answer rather
+    /// than no answer. See `AIFallbackChain` for the demotion rules.
+    var proTiers: [AIProviderTier] {
+        (primaryTier.map { [$0] } ?? []) + proFallbacks + freeTiers
+    }
+
+    /// The pre-routing chain: the primary followed by `AI_FALLBACK_PROVIDERS`.
+    /// Used when plan routing is switched off.
+    var legacyTiers: [AIProviderTier] {
+        (primaryTier.map { [$0] } ?? []) + fallbacks
     }
 
     static func load() -> Self {
@@ -81,6 +114,8 @@ struct AIProviderConfiguration: Sendable {
             tipsModel: firstNonEmpty(Environment.get("AI_TIPS_MODEL"), defaults.tipsModel, defaultModel),
             maxTokens: maxTokens,
             fallbacks: loadFallbacks(maxTokens: maxTokens),
+            freeTiers: loadFreeTiers(maxTokens: maxTokens),
+            proFallbacks: loadProFallbacks(maxTokens: maxTokens),
             requestTimeout: .seconds(Int64(
                 max(1, Environment.get("AI_REQUEST_TIMEOUT_SECONDS").flatMap(Int.init) ?? 60)
             ))
@@ -112,19 +147,80 @@ struct AIProviderConfiguration: Sendable {
         let raw = Environment.get("AI_FALLBACK_PROVIDERS")?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
-        let specs: [(provider: String, model: String)] = if raw.isEmpty {
-            defaultFallbackModels.map { (provider: "openrouter", model: $0) }
-        } else {
-            raw.split(separator: ",").compactMap { entry in
-                let parts = entry.split(separator: "|", maxSplits: 1).map {
-                    $0.trimmingCharacters(in: .whitespacesAndNewlines)
-                }
-                guard parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty else { return nil }
-                return (provider: parts[0].lowercased(), model: parts[1])
-            }
-        }
+        let specs = raw.isEmpty
+            ? defaultFallbackModels.map { (provider: "openrouter", model: $0) }
+            : parseTierSpecs(raw)
 
-        return specs.compactMap { spec in
+        return makeTiers(specs: specs, maxTokens: maxTokens)
+    }
+
+    /// The free plan's chain, in order.
+    ///
+    /// Sources, first non-empty wins: `AI_FREE_PROVIDERS`, then
+    /// `AI_FALLBACK_PROVIDERS` (so a deployment that predates plan routing keeps
+    /// the floor it already has), then `defaultFallbackModels`.
+    ///
+    /// Deliberately not gated on `AI_FALLBACK_ENABLED`. That switch means "the
+    /// paid chain does not demote"; it must never mean "free users have no model
+    /// at all".
+    static func loadFreeTiers(maxTokens: Int) -> [AIProviderTier] {
+        let raw = firstNonEmpty(
+            Environment.get("AI_FREE_PROVIDERS"),
+            Environment.get("AI_FALLBACK_PROVIDERS")
+        )
+        let specs = raw.isEmpty
+            ? defaultFallbackModels.map { (provider: "openrouter", model: $0) }
+            : parseTierSpecs(raw)
+
+        // The money guard. A free user must never reach a metered slug, so a
+        // configured tier that is not zero-cost is dropped rather than billed —
+        // an env-var typo is not a licence to spend.
+        let free = specs.filter { isFreeModelSlug($0.model) }
+        guard !free.isEmpty else {
+            return makeTiers(
+                specs: defaultFallbackModels.map { (provider: "openrouter", model: $0) },
+                maxTokens: maxTokens
+            )
+        }
+        return makeTiers(specs: free, maxTokens: maxTokens)
+    }
+
+    /// Paid alternates tried after the primary, before the free floor. Usually a
+    /// cheaper model than `AI_MODEL`. Empty is the normal case.
+    static func loadProFallbacks(maxTokens: Int) -> [AIProviderTier] {
+        let raw = Environment.get("AI_PRO_FALLBACK_PROVIDERS")?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !raw.isEmpty else { return [] }
+        return makeTiers(specs: parseTierSpecs(raw), maxTokens: maxTokens)
+    }
+
+    /// Whether a slug costs nothing to run.
+    ///
+    /// OpenRouter marks zero-cost variants with a `:free` suffix, and
+    /// `openrouter/free` is the auto-router across that same pool. Anything else
+    /// is assumed metered — the safe direction to be wrong in.
+    static func isFreeModelSlug(_ model: String) -> Bool {
+        let slug = model.trimmingCharacters(in: .whitespaces).lowercased()
+        return slug.hasSuffix(":free") || slug == "openrouter/free"
+    }
+
+    /// Parses comma-separated `provider|model` entries. Malformed entries are
+    /// dropped rather than failing the boot.
+    private static func parseTierSpecs(_ raw: String) -> [(provider: String, model: String)] {
+        raw.split(separator: ",").compactMap { entry in
+            let parts = entry.split(separator: "|", maxSplits: 1).map {
+                $0.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            guard parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty else { return nil }
+            return (provider: parts[0].lowercased(), model: parts[1])
+        }
+    }
+
+    private static func makeTiers(
+        specs: [(provider: String, model: String)],
+        maxTokens: Int
+    ) -> [AIProviderTier] {
+        specs.compactMap { spec in
             guard let endpoint = fallbackEndpoint(for: spec.provider) else { return nil }
             return AIProviderTier(
                 label: "\(spec.provider)-\(spec.model)",

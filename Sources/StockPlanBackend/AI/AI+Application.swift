@@ -10,6 +10,18 @@ extension Application {
         set { storage[OpenAIChatClientKey.self] = newValue }
     }
 
+    /// Optional on purpose: nil means "no plan routing", which is the path
+    /// `AIChatTests` and `WhyMovedTests` take when they inject a scripted client
+    /// into `openAIChatClient`.
+    struct AIModelRouterKey: StorageKey {
+        typealias Value = AIModelRouter
+    }
+
+    var aiModelRouter: AIModelRouter? {
+        get { storage[AIModelRouterKey.self] }
+        set { storage[AIModelRouterKey.self] = newValue }
+    }
+
     struct AIInsightsServiceKey: StorageKey {
         typealias Value = any AIInsightsService
     }
