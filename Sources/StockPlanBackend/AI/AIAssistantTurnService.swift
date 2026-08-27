@@ -187,7 +187,7 @@ extension AIAssistantController {
         let outcome = try await AIAssistantTurnCoordinator.run(
             userId: userId,
             conversation: conversation,
-            content: content,
+            content: AssistantAddress.strip(content),
             req: req
         )
 

@@ -28,7 +28,13 @@ struct AIChatController: RouteCollection {
         )
 
         let payload = try req.content.decode(AIChatRequest.self)
-        let history = payload.messages.prefix(30).map { OpenAIMessage(role: $0.sanitizedRole, content: $0.content) }
+        // Strip the assistant's name off the user's own turns only. Assistant
+        // turns are echoed back verbatim so the transcript stays faithful.
+        let history = payload.messages.prefix(30).map { message in
+            let role = message.sanitizedRole
+            let content = role == "user" ? AssistantAddress.strip(message.content) : message.content
+            return OpenAIMessage(role: role, content: content)
+        }
         guard history.contains(where: { $0.role == "user" }) else {
             throw Abort(.badRequest, reason: "At least one user message is required.")
         }

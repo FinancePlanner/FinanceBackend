@@ -57,6 +57,65 @@ struct TelegramFormatTests {
     }
 }
 
+/// Telegram enforces its 4096 limit on the *rendered* payload, counted in UTF-16
+/// code units. Chunking the raw markdown in `Character`s satisfies neither, and
+/// the gap is not small: escaping turns one `&` into five characters, so a chunk
+/// can arrive several times over the limit and be rejected outright.
+@Suite("Telegram chunk sizing")
+struct TelegramChunkSizingTests {
+    private func rendered(_ markdown: String) -> [String] {
+        TelegramFormat.htmlChunks(markdown).map { TelegramFormat.html($0) }
+    }
+
+    @Test("Ampersands still fit once escaped")
+    func ampersandsFitAfterEscaping() {
+        let storm = String(repeating: "a & b ", count: 2000)
+        for part in rendered(storm) {
+            #expect(part.utf16.count <= TelegramFormat.maxMessageCharacters)
+        }
+    }
+
+    @Test("Angle brackets still fit once escaped")
+    func angleBracketsFitAfterEscaping() {
+        let storm = String(repeating: "<tag> ", count: 2000)
+        for part in rendered(storm) {
+            #expect(part.utf16.count <= TelegramFormat.maxMessageCharacters)
+        }
+    }
+
+    @Test("Emoji are measured in UTF-16, the unit Telegram counts")
+    func emojiMeasuredInUTF16() {
+        // Two UTF-16 code units each but a single Character, so a Character
+        // count is off by half.
+        let emoji = String(repeating: "👍", count: 4000)
+        for part in TelegramFormat.htmlChunks(emoji) {
+            #expect(part.utf16.count <= TelegramFormat.maxMessageCharacters)
+        }
+    }
+
+    @Test("The plain fallback fits wherever the HTML one did")
+    func plainFallbackAlsoFits() {
+        let markdown = String(repeating: "**bold** and [a link](https://example.com/x) ", count: 300)
+        for part in TelegramFormat.htmlChunks(markdown) {
+            #expect(TelegramFormat.html(part).utf16.count <= TelegramFormat.maxMessageCharacters)
+            #expect(TelegramFormat.plain(part).utf16.count <= TelegramFormat.maxMessageCharacters)
+        }
+    }
+
+    @Test("Chunking loses no words")
+    func losesNoContent() {
+        let paragraph = String(repeating: "Spending is up & down. ", count: 500)
+        let stripped = { (text: String) in text.replacingOccurrences(of: " ", with: "") }
+        #expect(stripped(TelegramFormat.htmlChunks(paragraph).joined()) == stripped(paragraph))
+    }
+
+    @Test("Short text is still a single message")
+    func shortTextStaysWhole() {
+        #expect(TelegramFormat.htmlChunks("hello & goodbye") == ["hello & goodbye"])
+        #expect(TelegramFormat.htmlChunks("").isEmpty)
+    }
+}
+
 @Suite("Telegram update routing")
 struct TelegramUpdateTests {
     private func update(from json: String) throws -> TelegramUpdate {
@@ -229,5 +288,52 @@ struct MessagingPreferenceTests {
         #expect(throws: Never.self) {
             try MessagingController.validateQuietHours(start: 22, end: 8)
         }
+    }
+}
+
+/// Pure logic — no database, no network.
+@Suite("Addressing the assistant by name")
+struct AssistantAddressTests {
+    @Test("The assistant's name is stripped off the front of a question")
+    func stripsTheName() {
+        #expect(AssistantAddress.strip("Hey Q, what did I spend last month?") == "what did I spend last month?")
+        #expect(AssistantAddress.strip("@Q summarise my month") == "summarise my month")
+        #expect(AssistantAddress.strip("Q: how is my portfolio doing") == "how is my portfolio doing")
+        #expect(AssistantAddress.strip("q - log a coffee") == "log a coffee")
+        #expect(AssistantAddress.strip("  hi Q!  budget please ") == "budget please ")
+    }
+
+    @Test("A ticker or quarter beginning with Q survives untouched")
+    func leavesTickersAlone() {
+        // The word-boundary rule: a letter or digit straight after the Q means
+        // it was never the assistant's name.
+        for text in ["Q3 earnings for AAPL", "QQQ price?", "Quick question about my budget",
+                     "Qualcomm outlook", "QS is down again"]
+        {
+            #expect(AssistantAddress.strip(text) == text)
+        }
+    }
+
+    @Test("A Telegram pairing code starting with Q is never mangled")
+    func leavesPairingCodesAlone() {
+        // MessagingLinkService.codeAlphabet contains Q, so roughly one code in
+        // thirty-one starts with it. Stripping one character would fail the
+        // length check and strand the user on "code is not valid or expired".
+        #expect(MessagingLinkService.codeAlphabet.contains("Q"))
+        #expect(AssistantAddress.strip("Q7KMPX3R") == "Q7KMPX3R")
+    }
+
+    @Test("The name alone is left whole rather than reduced to nothing")
+    func keepsBareGreetings() {
+        #expect(AssistantAddress.strip("Q") == "Q")
+        #expect(AssistantAddress.strip("Hey Q") == "Hey Q")
+        #expect(AssistantAddress.strip("Q???") == "Q???")
+    }
+
+    @Test("A greeting on its own is not treated as an address")
+    func leavesPlainGreetingsAlone() {
+        #expect(AssistantAddress.strip("hey there") == "hey there")
+        #expect(AssistantAddress.strip("ok sounds good") == "ok sounds good")
+        #expect(AssistantAddress.strip("what did I spend?") == "what did I spend?")
     }
 }

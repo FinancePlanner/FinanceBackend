@@ -117,10 +117,13 @@ enum MessagingService {
 
         let conversation = try await resolveConversation(userId: userId, req: req)
         do {
+            // Strip the assistant's name here and nowhere earlier. Pairing
+            // codes contain Q and are handled up in handleUnlinked; commands
+            // and confirmations have both already had their pass by this point.
             let outcome = try await AIAssistantTurnCoordinator.run(
                 userId: userId,
                 conversation: conversation,
-                content: inbound.text,
+                content: AssistantAddress.strip(inbound.text),
                 req: req
             )
             guard let pending = outcome.pendingAction else {
