@@ -35,6 +35,7 @@ enum AIReadToolRegistry {
             tool("search_symbols", "Search stocks and ETFs by name or ticker.", [
                 "query": OpenAIParameter(type: "string", description: "Company, fund, or ticker search text."),
             ], required: ["query"]),
+            tool("get_crypto_portfolio", "The user's crypto holdings with live prices and 24-hour changes."),
             tool("get_insights", "Latest first-party market-sentiment insights summary."),
         ]
     }
@@ -116,6 +117,18 @@ enum AIReadToolRegistry {
             }
             return try await encode(req.application.marketDataService.search(query: query, on: req))
 
+        case "get_crypto_portfolio":
+            // Holdings are per-user and come from the database; quotes are a
+            // provider call, so the two are fetched together rather than making
+            // the model ask twice for one answer. Until this existed the
+            // assistant could not see crypto at all -- it would answer "how are
+            // my crypto holdings" from the stock dashboard alone.
+            async let holdings = req.application.cryptoService.listPortfolio(
+                userId: context.userId, on: req.db
+            )
+            async let quotes = req.application.cryptoService.batchQuotes(short: true, on: req)
+            return try await encode(CryptoHoldings(holdings: holdings, quotes: quotes))
+
         case "get_insights":
             let summary = try await req.application.insightsService.summary(days: 7, on: req.db)
             return try "{\"untrusted_data\":" + encode(summary) + "}"
@@ -183,6 +196,11 @@ enum AIReadToolRegistry {
             return value.lowercased() == "true"
         }
         return nil
+    }
+
+    private struct CryptoHoldings: Encodable {
+        let holdings: [CryptoPortfolioItemResponse]
+        let quotes: [CryptoQuoteShortResponse]
     }
 
     static func encode(_ value: some Encodable) throws -> String {

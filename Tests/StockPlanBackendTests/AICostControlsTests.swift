@@ -64,4 +64,32 @@ struct AICostControlsTests {
         #expect(AICostControls.dailyLimit == 1)
         #expect(AICostControls.freeMonthlyLimit == 0)
     }
+
+    @Test("The view-summary allowance is separate from the shared daily limit")
+    func viewSummaryLimitIsIndependent() {
+        defer {
+            unsetenv("AI_DAILY_LIMIT")
+            unsetenv("AI_VIEW_SUMMARY_DAILY_LIMIT")
+        }
+        unsetenv("AI_DAILY_LIMIT")
+        unsetenv("AI_VIEW_SUMMARY_DAILY_LIMIT")
+        #expect(AICostControls.viewSummaryDailyLimit == 25)
+
+        // Turning one down must not move the other: the point of the split is
+        // that summaries cannot starve the assistant.
+        setenv("AI_DAILY_LIMIT", "1", 1)
+        #expect(AICostControls.viewSummaryDailyLimit == 25)
+
+        setenv("AI_VIEW_SUMMARY_DAILY_LIMIT", "4", 1)
+        #expect(AICostControls.viewSummaryDailyLimit == 4)
+        #expect(AICostControls.dailyLimit == 1)
+
+        setenv("AI_VIEW_SUMMARY_DAILY_LIMIT", "0", 1)
+        #expect(AICostControls.viewSummaryDailyLimit == 1, "floor of one, as elsewhere")
+    }
+
+    @Test("The two allowances count in different Redis buckets")
+    func bucketsAreDistinct() {
+        #expect(AICostControls.viewSummaryBucket != AIDailyCap.defaultBucket)
+    }
 }

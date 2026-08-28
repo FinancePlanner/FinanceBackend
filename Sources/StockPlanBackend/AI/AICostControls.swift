@@ -22,6 +22,21 @@ enum AICostControls {
         max(1, Environment.get("AI_DAILY_LIMIT").flatMap(Int.init) ?? 50)
     }
 
+    /// Allowance for the per-view AI summaries, counted separately from
+    /// `dailyLimit`.
+    ///
+    /// Its own bucket because the button appears on eight screens and carries a
+    /// refresh control, so on the shared counter it would starve `/v1/ai/chat`
+    /// -- the one AI surface a user would notice losing. Lower than the shared
+    /// limit on purpose: summaries are cached for an hour, so a working day
+    /// needs far fewer calls than taps.
+    static var viewSummaryDailyLimit: Int {
+        max(1, Environment.get("AI_VIEW_SUMMARY_DAILY_LIMIT").flatMap(Int.init) ?? 25)
+    }
+
+    /// The Redis bucket the above is counted in.
+    static let viewSummaryBucket = "ai_view_summary_daily"
+
     /// Free-tier monthly assistant turns (`/v1/ai/assistant/...`). Pro is uncapped
     /// at this layer (still subject to route rate limits + daily Redis cap where applied).
     static var freeMonthlyLimit: Int {

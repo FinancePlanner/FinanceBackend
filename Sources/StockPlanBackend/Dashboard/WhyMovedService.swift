@@ -1,6 +1,5 @@
 import Fluent
 import Foundation
-import Redis
 import Vapor
 
 protocol WhyMovedService: Sendable {
@@ -162,7 +161,7 @@ struct DefaultWhyMovedService: WhyMovedService {
         guard !movers.isEmpty else { return nil }
         let cacheKey = "whymoved:ai:v1:\(userId.uuidString)"
 
-        if let cached: CachedSummary = await redisGet(cacheKey, on: req) {
+        if let cached: CachedSummary = await req.application.aiResponseCache.get(cacheKey, on: req) {
             return WhyMovedAISummary(text: cached.text, generatedAt: cached.generatedAt)
         }
 
@@ -209,7 +208,9 @@ struct DefaultWhyMovedService: WhyMovedService {
                 text: text,
                 generatedAt: ISO8601DateFormatter().string(from: Date())
             )
-            await redisSet(cacheKey, value: summary, ttlSeconds: Self.aiCacheTTLSeconds, on: req)
+            await req.application.aiResponseCache.set(
+                cacheKey, value: summary, ttlSeconds: Self.aiCacheTTLSeconds, on: req
+            )
             return WhyMovedAISummary(text: summary.text, generatedAt: summary.generatedAt)
         } catch {
             req.logger.warning("why_moved ai skipped reason=provider_failure error=\(error)")
@@ -257,26 +258,5 @@ struct DefaultWhyMovedService: WhyMovedService {
 
     private func round2(_ value: Double) -> Double {
         (value * 100).rounded() / 100
-    }
-
-    private func redisGet<T: Decodable>(_ key: String, on req: Request) async -> T? {
-        guard req.application.redis.configuration != nil else { return nil }
-        do {
-            guard let data = try await req.redis.get(RedisKey(key), as: Data.self).get() else { return nil }
-            return try JSONDecoder().decode(T.self, from: data)
-        } catch {
-            req.logger.warning("why_moved redis read failed key=\(key) error=\(error)")
-            return nil
-        }
-    }
-
-    private func redisSet(_ key: String, value: some Encodable, ttlSeconds: Int, on req: Request) async {
-        guard req.application.redis.configuration != nil else { return }
-        do {
-            let data = try JSONEncoder().encode(value)
-            try await req.redis.setex(RedisKey(key), to: data, expirationInSeconds: max(1, ttlSeconds)).get()
-        } catch {
-            req.logger.warning("why_moved redis write failed key=\(key) error=\(error)")
-        }
     }
 }
