@@ -52,6 +52,13 @@ struct AIAssistantController: RouteCollection {
                                      titleEncrypted: req.userPIIEncryptionService.encryptString(title),
                                      expiresAt: Date().addingTimeInterval(30 * 86400))
         try await row.create(on: req.db)
+        // Starting fresh in the app starts fresh everywhere. The alternative --
+        // leaving a linked Telegram chat on the thread the user just walked away
+        // from -- is the incoherence the stored pairing exists to remove.
+        // Unconditional: the client only reaches here for a deliberate "New
+        // conversation" (or a first-run account with none), and it is a no-op
+        // for users with no linked chats.
+        try await MessagingConversations.bindLinks(userId: userId, to: row.requireID(), req: req)
         return try json(AIConversationResponse(id: row.requireID().uuidString, title: title,
                                                messages: [], createdAt: timestamp(row.createdAt), updatedAt: timestamp(row.updatedAt ?? row.createdAt)), status: .created)
     }

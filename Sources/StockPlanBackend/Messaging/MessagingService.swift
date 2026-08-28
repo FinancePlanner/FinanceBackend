@@ -39,9 +39,9 @@ enum MessagingService {
         case let .reply(message):
             return message
         case let .assistant(question):
-            return try await assistantTurn(inbound, userId: link.userId, req: req, overrideText: question)
+            return try await assistantTurn(inbound, link: link, req: req, overrideText: question)
         case nil:
-            return try await assistantTurn(inbound, userId: link.userId, req: req)
+            return try await assistantTurn(inbound, link: link, req: req)
         }
     }
 
@@ -167,10 +167,11 @@ enum MessagingService {
 
     private static func assistantTurn(
         _ inbound: InboundMessage,
-        userId: UUID,
+        link: MessagingLink,
         req: Request,
         overrideText: String? = nil
     ) async throws -> OutboundMessage {
+        let userId = link.userId
         // Strip how the user addressed Q before anything else reads the words.
         //
         // Order matters: this has to precede parseConfirmationAnswer, which
@@ -194,18 +195,31 @@ enum MessagingService {
         // counts while something is actually pending: otherwise every casual
         // "ok" or "go on" would be answered with "nothing to confirm" instead
         // of reaching the assistant.
+        //
+        // Resolving the conversation has to come first, because a typed answer
+        // is only allowed to settle a proposal made *on this thread*. Doing it
+        // in the other order is what let a bare "ok" in Telegram confirm an
+        // action the app had proposed somewhere else entirely.
+        let conversation = try await MessagingConversations.resolve(link: link, req: req)
+        let conversationId = try conversation.requireID()
+
         if let answer = parseConfirmationAnswer(text) {
             switch answer {
             case .approve, .decline:
-                return try await resolveConfirmation(answer, userId: userId, req: req)
+                return try await resolveConfirmation(
+                    answer, userId: userId, conversationId: conversationId, req: req
+                )
             case .approveLatest, .declineLatest:
-                if try await latestPendingActionID(userId: userId, req: req) != nil {
-                    return try await resolveConfirmation(answer, userId: userId, req: req)
+                if try await latestPendingActionID(
+                    userId: userId, conversationId: conversationId, req: req
+                ) != nil {
+                    return try await resolveConfirmation(
+                        answer, userId: userId, conversationId: conversationId, req: req
+                    )
                 }
             }
         }
 
-        let conversation = try await resolveConversation(userId: userId, req: req)
         do {
             let outcome = try await AIAssistantTurnCoordinator.run(
                 userId: userId,
@@ -230,10 +244,6 @@ enum MessagingService {
             req.logger.warning("messaging_turn_refused status=\(abort.status.code)")
             return OutboundMessage(text: abort.reason)
         }
-    }
-
-    private static func resolveConversation(userId: UUID, req: Request) async throws -> AIConversation {
-        try await MessagingConversations.resolve(userId: userId, req: req)
     }
 
     // MARK: - Confirmations
@@ -283,6 +293,7 @@ enum MessagingService {
     private static func resolveConfirmation(
         _ answer: ConfirmationAnswer,
         userId: UUID,
+        conversationId: UUID,
         req: Request
     ) async throws -> OutboundMessage {
         let actionID: UUID?
@@ -290,8 +301,16 @@ enum MessagingService {
         switch answer {
         case let .approve(id): actionID = id; approving = true
         case let .decline(id): actionID = id; approving = false
-        case .approveLatest: actionID = try await latestPendingActionID(userId: userId, req: req); approving = true
-        case .declineLatest: actionID = try await latestPendingActionID(userId: userId, req: req); approving = false
+        case .approveLatest:
+            actionID = try await latestPendingActionID(
+                userId: userId, conversationId: conversationId, req: req
+            )
+            approving = true
+        case .declineLatest:
+            actionID = try await latestPendingActionID(
+                userId: userId, conversationId: conversationId, req: req
+            )
+            approving = false
         }
         guard let actionID else {
             // Nothing is waiting, so this was ordinary conversation after all.
@@ -309,9 +328,28 @@ enum MessagingService {
         }
     }
 
-    private static func latestPendingActionID(userId: UUID, req: Request) async throws -> UUID? {
+    /// The proposal a typed "yes" is allowed to settle.
+    ///
+    /// Scoped to the conversation the answer arrived on. Without that filter a
+    /// bare "ok" in Telegram would settle whatever was pending for the account,
+    /// including a deletion the assistant had proposed in the app minutes
+    /// earlier — the approval vocabulary is broad enough ("ok", "do", "go")
+    /// that this needs no ill intent to happen by accident.
+    ///
+    /// A null `conversationId` is deliberately not matched. Proposals are
+    /// created in exactly one place and always carry the conversation they were
+    /// made on, so a null can only mean that thread has since been retired and
+    /// the column was nulled. Such a proposal has no context a person could be
+    /// answering, so a typed yes must not reach it. Its Confirm button still
+    /// does, because that payload names the action explicitly.
+    private static func latestPendingActionID(
+        userId: UUID,
+        conversationId: UUID,
+        req: Request
+    ) async throws -> UUID? {
         try await AIPendingAction.query(on: req.db)
             .filter(\.$userId == userId)
+            .filter(\.$conversationId == conversationId)
             .filter(\.$status == AIActionStatus.pending.rawValue)
             .filter(\.$expiresAt > Date())
             .sort(\.$createdAt, .descending)

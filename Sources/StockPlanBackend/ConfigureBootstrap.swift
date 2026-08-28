@@ -309,6 +309,7 @@ func registerMigrations(_ app: Application) {
     // the symbol universe the aggregation job walks.
     app.migrations.add(CreateSymbolSentimentDaily())
     app.migrations.add(AddSourceToTickerSentimentPost())
+    app.migrations.add(AddMessagingLinkConversation())
     app.migrations.add(CreateSentimentUniverseSymbol())
 }
 
