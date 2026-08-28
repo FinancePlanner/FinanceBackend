@@ -40,6 +40,19 @@ final class MessagingLink: Model, @unchecked Sendable {
     @OptionalField(key: "last_seen_at")
     var lastSeenAt: Date?
 
+    /// The assistant conversation this chat writes into.
+    ///
+    /// Null means unbound: either the link predates the binding, or the thread
+    /// it pointed at has since been retired (the column is `ON DELETE SET
+    /// NULL`). Either way the resolver adopts a thread and pins it on the next
+    /// message, so a null here is a normal state rather than an error.
+    ///
+    /// `@OptionalField` rather than `@OptionalParent`, matching
+    /// `AIPendingAction.conversationId`: this table is deliberately not an auth
+    /// identity and has no reason to know the AI module's model type.
+    @OptionalField(key: "conversation_id")
+    var conversationId: UUID?
+
     init() {}
 
     init(
@@ -48,7 +61,8 @@ final class MessagingLink: Model, @unchecked Sendable {
         platform: String,
         externalID: String,
         lastUpdateID: Int64 = 0,
-        lastSeenAt: Date? = nil
+        lastSeenAt: Date? = nil,
+        conversationId: UUID? = nil
     ) {
         self.id = id
         self.userId = userId
@@ -56,6 +70,7 @@ final class MessagingLink: Model, @unchecked Sendable {
         self.externalID = externalID
         self.lastUpdateID = lastUpdateID
         self.lastSeenAt = lastSeenAt
+        self.conversationId = conversationId
     }
 }
 

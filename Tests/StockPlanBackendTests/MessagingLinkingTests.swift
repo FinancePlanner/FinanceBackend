@@ -412,6 +412,264 @@ struct MessagingLinkingTests {
         }
     }
 
+    @Test("A pinned chat keeps its thread even when a newer one exists")
+    func pinnedThreadWinsOverNewer() async throws {
+        try await withApp { app in
+            let user = try await registerUser(app: app)
+            try await Entitlement(userId: user.userId, level: "pro").save(on: app.db)
+            let req = backgroundRequest(app)
+            app.openAIChatClient = FixedReplyChatClient(text: "Noted.")
+
+            let pinned = try AIConversation(
+                userId: user.userId,
+                titleEncrypted: req.userPIIEncryptionService.encryptString("Telegram"),
+                expiresAt: Date().addingTimeInterval(30 * 86400)
+            )
+            try await pinned.create(on: app.db)
+
+            try await MessagingLink(
+                userId: user.userId, platform: MessagingPlatform.telegram,
+                externalID: "4242", conversationId: pinned.requireID()
+            ).create(on: app.db)
+
+            // Newer by updatedAt, which is precisely what the old resolver
+            // would have chosen.
+            let newer = try AIConversation(
+                userId: user.userId,
+                titleEncrypted: req.userPIIEncryptionService.encryptString("From the app"),
+                expiresAt: Date().addingTimeInterval(30 * 86400)
+            )
+            try await newer.create(on: app.db)
+
+            _ = try await MessagingService.handle(inbound("hello"), req: req)
+
+            let pinnedMessages = try await AIAssistantMessage.query(on: app.db)
+                .filter(\.$conversation.$id == pinned.requireID()).count()
+            let newerMessages = try await AIAssistantMessage.query(on: app.db)
+                .filter(\.$conversation.$id == newer.requireID()).count()
+            #expect(pinnedMessages == 2, "the turn belongs to the pinned thread")
+            #expect(newerMessages == 0, "a newer thread must not steal the chat")
+        }
+    }
+
+    @Test("Retiring the pinned conversation does not break the chat")
+    func retiredThreadReleasesTheLink() async throws {
+        try await withApp { app in
+            let user = try await registerUser(app: app)
+            try await Entitlement(userId: user.userId, level: "pro").save(on: app.db)
+            let req = backgroundRequest(app)
+            app.openAIChatClient = FixedReplyChatClient(text: "Still here.")
+
+            let doomed = try AIConversation(
+                userId: user.userId,
+                titleEncrypted: req.userPIIEncryptionService.encryptString("Telegram"),
+                expiresAt: Date().addingTimeInterval(30 * 86400)
+            )
+            try await doomed.create(on: app.db)
+            let doomedID = try doomed.requireID()
+            try await MessagingLink(
+                userId: user.userId, platform: MessagingPlatform.telegram,
+                externalID: "4242", conversationId: doomedID
+            ).create(on: app.db)
+
+            // What the retention job does to an expired thread. The FK is
+            // ON DELETE SET NULL precisely so this cannot take the link with it.
+            try await doomed.delete(on: app.db)
+
+            let afterDelete = try await MessagingLink.query(on: app.db).first()
+            #expect(afterDelete != nil, "the link must outlive the conversation")
+            #expect(afterDelete?.conversationId == nil)
+
+            // And the next message re-binds rather than failing.
+            let reply = try await MessagingService.handle(inbound("are you there?"), req: req)
+            #expect(reply.text == "Still here.")
+            let rebound = try await MessagingLink.query(on: app.db).first()
+            #expect(rebound?.conversationId != nil)
+            #expect(rebound?.conversationId != doomedID)
+        }
+    }
+
+    @Test("Starting a conversation in the app moves the chat to it")
+    func appConversationMovesTheChat() async throws {
+        try await withApp { app in
+            let user = try await registerUser(app: app)
+            try await Entitlement(userId: user.userId, level: "pro").save(on: app.db)
+            let req = backgroundRequest(app)
+            app.openAIChatClient = FixedReplyChatClient(text: "Fresh.")
+
+            let old = try AIConversation(
+                userId: user.userId,
+                titleEncrypted: req.userPIIEncryptionService.encryptString("Telegram"),
+                expiresAt: Date().addingTimeInterval(30 * 86400)
+            )
+            try await old.create(on: app.db)
+            try await MessagingLink(
+                userId: user.userId, platform: MessagingPlatform.telegram,
+                externalID: "4242", conversationId: old.requireID()
+            ).create(on: app.db)
+
+            var createdID = ""
+            try await app.testing().test(
+                .POST, "v1/ai/assistant/conversations",
+                beforeRequest: { r in
+                    r.headers.bearerAuthorization = .init(token: user.token)
+                    try r.content.encode(["title": "New conversation"])
+                },
+                afterResponse: { res async throws in
+                    #expect(res.status == .created)
+                    createdID = try res.content.decode(AIConversationResponse.self).id
+                }
+            )
+
+            let link = try await MessagingLink.query(on: app.db).first()
+            #expect(link?.conversationId?.uuidString == createdID)
+
+            // And the next Telegram message lands there, not on the old thread.
+            _ = try await MessagingService.handle(inbound("hi"), req: req)
+            let oldMessages = try await AIAssistantMessage.query(on: app.db)
+                .filter(\.$conversation.$id == old.requireID()).count()
+            #expect(oldMessages == 0)
+        }
+    }
+
+    // MARK: - Confirmations are scoped to the thread they arrived on
+
+    /// Builds a proposal without going through the model, so the test is about
+    /// the lookup rather than about tool-calling.
+    private func pendingAction(
+        userId: UUID,
+        conversationId: UUID?,
+        req: Request,
+        on db: any Database
+    ) async throws -> AIPendingAction {
+        let action = AIPendingAction()
+        action.userId = userId
+        action.conversationId = conversationId
+        action.toolName = "delete_expense"
+        action.argumentsEncrypted = try req.userPIIEncryptionService.encryptString("{}")
+        action.summaryEncrypted = try req.userPIIEncryptionService
+            .encryptString("Delete the selected expense.")
+        action.status = AIActionStatus.pending.rawValue
+        action.expiresAt = Date().addingTimeInterval(15 * 60)
+        try await action.create(on: db)
+        return action
+    }
+
+    @Test("A typed answer in the chat cannot settle a proposal made in the app")
+    func typedAnswerCannotSettleAnotherThreadsProposal() async throws {
+        try await withApp { app in
+            let user = try await registerUser(app: app)
+            try await Entitlement(userId: user.userId, level: "pro").save(on: app.db)
+            let req = backgroundRequest(app)
+            app.openAIChatClient = FixedReplyChatClient(text: "Here are your expenses.")
+
+            // The chat's own thread...
+            let chatThread = try AIConversation(
+                userId: user.userId,
+                titleEncrypted: req.userPIIEncryptionService.encryptString("Telegram"),
+                expiresAt: Date().addingTimeInterval(30 * 86400)
+            )
+            try await chatThread.create(on: app.db)
+            try await MessagingLink(
+                userId: user.userId, platform: MessagingPlatform.telegram,
+                externalID: "4242", conversationId: chatThread.requireID()
+            ).create(on: app.db)
+
+            // ...and a deletion proposed somewhere else entirely.
+            let appThread = try AIConversation(
+                userId: user.userId,
+                titleEncrypted: req.userPIIEncryptionService.encryptString("In the app"),
+                expiresAt: Date().addingTimeInterval(30 * 86400)
+            )
+            try await appThread.create(on: app.db)
+            let action = try await pendingAction(
+                userId: user.userId, conversationId: appThread.requireID(),
+                req: req, on: app.db
+            )
+
+            // "no" is a refusal word, so under the old lookup this cancelled the
+            // app's proposal. It must now be read as ordinary conversation.
+            let reply = try await MessagingService.handle(inbound("no", updateID: 1), req: req)
+            #expect(reply.text == "Here are your expenses.")
+
+            let after = try await AIPendingAction.find(action.requireID(), on: app.db)
+            #expect(after?.status == AIActionStatus.pending.rawValue, "untouched")
+        }
+    }
+
+    @Test("A typed answer does settle a proposal made on the same thread")
+    func typedAnswerSettlesItsOwnThreadsProposal() async throws {
+        try await withApp { app in
+            let user = try await registerUser(app: app)
+            try await Entitlement(userId: user.userId, level: "pro").save(on: app.db)
+            let req = backgroundRequest(app)
+            app.openAIChatClient = FixedReplyChatClient(text: "Here are your expenses.")
+
+            let chatThread = try AIConversation(
+                userId: user.userId,
+                titleEncrypted: req.userPIIEncryptionService.encryptString("Telegram"),
+                expiresAt: Date().addingTimeInterval(30 * 86400)
+            )
+            try await chatThread.create(on: app.db)
+            try await MessagingLink(
+                userId: user.userId, platform: MessagingPlatform.telegram,
+                externalID: "4242", conversationId: chatThread.requireID()
+            ).create(on: app.db)
+
+            let action = try await pendingAction(
+                userId: user.userId, conversationId: chatThread.requireID(),
+                req: req, on: app.db
+            )
+
+            let reply = try await MessagingService.handle(inbound("no", updateID: 1), req: req)
+            #expect(reply.text == "Cancelled. Nothing was changed.")
+
+            let after = try await AIPendingAction.find(action.requireID(), on: app.db)
+            #expect(after?.status == AIActionStatus.cancelled.rawValue)
+        }
+    }
+
+    @Test("An orphaned proposal needs its button, not a typed answer")
+    func orphanedProposalNeedsItsButton() async throws {
+        try await withApp { app in
+            let user = try await registerUser(app: app)
+            try await Entitlement(userId: user.userId, level: "pro").save(on: app.db)
+            let req = backgroundRequest(app)
+            app.openAIChatClient = FixedReplyChatClient(text: "Here are your expenses.")
+
+            let chatThread = try AIConversation(
+                userId: user.userId,
+                titleEncrypted: req.userPIIEncryptionService.encryptString("Telegram"),
+                expiresAt: Date().addingTimeInterval(30 * 86400)
+            )
+            try await chatThread.create(on: app.db)
+            try await MessagingLink(
+                userId: user.userId, platform: MessagingPlatform.telegram,
+                externalID: "4242", conversationId: chatThread.requireID()
+            ).create(on: app.db)
+
+            // conversationId nil: the thread it was proposed on has been retired.
+            let action = try await pendingAction(
+                userId: user.userId, conversationId: nil, req: req, on: app.db
+            )
+            let actionID = try action.requireID().uuidString
+
+            // A bare answer has no context to attach to, so it must not reach it.
+            let typed = try await MessagingService.handle(inbound("no", updateID: 1), req: req)
+            #expect(typed.text == "Here are your expenses.")
+            var after = try await AIPendingAction.find(action.requireID(), on: app.db)
+            #expect(after?.status == AIActionStatus.pending.rawValue)
+
+            // The button names the action, so it still works.
+            let tapped = try await MessagingService.handle(
+                inbound(MessagingService.declinePrefix + actionID, updateID: 2), req: req
+            )
+            #expect(tapped.text == "Cancelled. Nothing was changed.")
+            after = try await AIPendingAction.find(action.requireID(), on: app.db)
+            #expect(after?.status == AIActionStatus.cancelled.rawValue)
+        }
+    }
+
     @Test("A Telegram turn continues the same conversation the web app shows")
     func sharesTheWebThread() async throws {
         try await withApp { app in
@@ -440,6 +698,12 @@ struct MessagingLinkingTests {
             let messages = try await AIAssistantMessage.query(on: app.db)
                 .filter(\.$conversation.$id == existing.requireID()).count()
             #expect(messages == 2)
+
+            // Adopting the thread also pins it, so the pairing survives the app
+            // later creating a newer conversation.
+            let existingID = try existing.requireID()
+            let link = try await MessagingLink.query(on: app.db).first()
+            #expect(link?.conversationId == existingID)
         }
     }
 
