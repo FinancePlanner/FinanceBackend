@@ -66,12 +66,10 @@ struct DefaultAIInsightsService: AIInsightsService {
         return dataset
     }
 
-    struct InsightDataset: Encodable, Sendable {
-        var dashboard: DashboardResponse?
-        var dashboardInsights: DashboardInsightsResponse?
-        var expenseReports: [BudgetMonthSummaryResponse]?
-        var budgetPlanning: [PillarPlanningSummaryResponse]?
-    }
+    /// The dataset moved to `AIHighlightBuilders` so a second surface could reuse
+    /// it. Kept as an alias because `DefaultAIInsightsService.InsightDataset` is
+    /// the name callers and tests already use.
+    typealias InsightDataset = AIInsightDataset
 
     private struct AICardNarrative: Decodable {
         let title: String
@@ -91,11 +89,11 @@ struct DefaultAIInsightsService: AIInsightsService {
     static func highlights(for kind: AIInsightKind, dataset: InsightDataset) -> [AIInsightHighlight] {
         switch kind {
         case .portfolio:
-            portfolioHighlights(dataset)
+            AIHighlightBuilders.portfolio(dataset)
         case .expenses:
-            expenseHighlights(dataset)
+            AIHighlightBuilders.expenses(dataset)
         case .summary:
-            Array((portfolioHighlights(dataset) + expenseHighlights(dataset)).prefix(4))
+            AIHighlightBuilders.combined(dataset)
         }
     }
 
@@ -112,56 +110,6 @@ struct DefaultAIInsightsService: AIInsightsService {
             ("Financial snapshot", "Your latest financial snapshot is ready. The figures below come directly from your portfolio, expense, and budget records.")
         }
         return AIInsightCardResponse(kind: kind, title: copy.0, body: copy.1, highlights: highlights)
-    }
-
-    private static func portfolioHighlights(_ dataset: InsightDataset) -> [AIInsightHighlight] {
-        guard let dashboard = dataset.dashboard else { return [] }
-        var values = [
-            AIInsightHighlight(label: "Portfolio value", value: formatNumber(dashboard.totalValue)),
-            AIInsightHighlight(
-                label: "Daily change",
-                value: formatPercent(dashboard.dailyChangePercent),
-                trend: trend(dashboard.dailyChangePercent)
-            ),
-        ]
-        if let insights = dataset.dashboardInsights {
-            values.append(AIInsightHighlight(
-                label: "Financial health",
-                value: "\(insights.financialHealth.score)/\(insights.financialHealth.maxScore)"
-            ))
-            values.append(AIInsightHighlight(label: "Savings rate", value: formatPercent(insights.savingsRate)))
-        }
-        return values
-    }
-
-    private static func expenseHighlights(_ dataset: InsightDataset) -> [AIInsightHighlight] {
-        guard let latest = dataset.expenseReports?.last else {
-            let actual = dataset.budgetPlanning?.reduce(0) { $0 + $1.actualAmount } ?? 0
-            return actual == 0 ? [] : [AIInsightHighlight(label: "Month spending", value: formatNumber(actual))]
-        }
-        var values = [
-            AIInsightHighlight(label: "Month spending", value: formatNumber(latest.actual)),
-            AIInsightHighlight(label: "Month plan", value: formatNumber(latest.planned)),
-        ]
-        if latest.salary > 0 {
-            let savingsRate = max(0, ((latest.salary - latest.actual) / latest.salary) * 100)
-            values.append(AIInsightHighlight(label: "Savings rate", value: formatPercent(savingsRate)))
-        }
-        return values
-    }
-
-    /// Number and month rendering live in `MoneyFormat`, shared with the
-    /// messaging replies so both say a number the same way.
-    private static func formatNumber(_ value: Double) -> String {
-        MoneyFormat.number(value)
-    }
-
-    private static func formatPercent(_ value: Double) -> String {
-        MoneyFormat.percent(value)
-    }
-
-    private static func trend(_ value: Double) -> String {
-        MoneyFormat.trend(value)
     }
 
     private static func currentMonthStart() -> Date {
