@@ -12,6 +12,20 @@ final class TaxReportGenerationPoller: LifecycleHandler, @unchecked Sendable {
     }
 
     func didBoot(_ app: Application) throws {
+        // Test applications boot and shut down in about a second -- less than
+        // this poller's one-second initial delay -- so a scheduled tick only
+        // races teardown. It reaches `app.db` after the databases are disposed
+        // and traps in `FluentProvider.swift:48`, taking the whole test process
+        // with it partway through a run. That failure reddened CI on #146,
+        // on the post-merge run for #147, and on #149, each time for reasons
+        // unrelated to the change under test.
+        //
+        // Same fix, and the same reasoning, as `MacroRefreshJob` in a08a73b.
+        // The tests that exercise this poller call `runOnce` directly.
+        guard app.environment != .testing else {
+            app.logger.debug("tax_report_poller not scheduled in testing environment")
+            return
+        }
         let scheduled = app.eventLoopGroup.next().scheduleRepeatedTask(
             initialDelay: .seconds(1),
             delay: .seconds(intervalSeconds)
@@ -32,6 +46,11 @@ final class TaxReportGenerationPoller: LifecycleHandler, @unchecked Sendable {
 
     func runOnce(_ app: Application) async {
         do {
+            // Cancellation is cooperative, and `shutdown` cancels this task --
+            // but the first thing below reaches for a database. Without this
+            // check a tick that started just before teardown traps instead of
+            // returning.
+            try Task.checkCancellation()
             let candidates = try await TaxReport.query(on: app.db)
                 .filter(\.$status ~~ ["pending", "retry", "generating"])
                 .sort(\.$createdAt, .ascending)
