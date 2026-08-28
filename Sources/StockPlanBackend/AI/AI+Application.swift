@@ -22,6 +22,15 @@ extension Application {
         set { storage[AIModelRouterKey.self] = newValue }
     }
 
+    struct AIViewSummaryServiceKey: StorageKey {
+        typealias Value = any AIViewSummaryService
+    }
+
+    var aiViewSummaryService: any AIViewSummaryService {
+        get { storage[AIViewSummaryServiceKey.self]! }
+        set { storage[AIViewSummaryServiceKey.self] = newValue }
+    }
+
     struct AIInsightsServiceKey: StorageKey {
         typealias Value = any AIInsightsService
     }

@@ -233,6 +233,9 @@ public func configure(_ app: Application) async throws {
     let openAIChatClient = aiModelRouter?.pro ?? makeOpenAIChatClient(app)
     app.openAIChatClient = openAIChatClient
     app.aiInsightsService = DefaultAIInsightsService(client: openAIChatClient)
+    // Same client as the insight cards: both are Pro-gated, so both stay on
+    // the Pro chain rather than being plan-routed.
+    app.aiViewSummaryService = DefaultAIViewSummaryService(client: openAIChatClient)
     // In-app conversational assistant (Pro-gated, first-party only). Shares the
     // OpenAI client; tools execute in-process against the user's own data.
     app.aiChatService = DefaultAIChatService(client: openAIChatClient)

@@ -8,6 +8,26 @@ import Vapor
 /// failure in a feature test.
 @Suite("AI groundwork")
 struct AIGroundworkTests {
+    /// Shuts the application down **inline**.
+    ///
+    /// The first version of these tests used
+    /// `defer { Task { try? await app.asyncShutdown() } }`, because `defer`
+    /// cannot `await`. That detaches the shutdown and lets it land at an
+    /// unpredictable point while Swift Testing runs other suites in parallel,
+    /// and it produced `Vapor/Core.swift:138: Fatal error: Core not configured`
+    /// in an unrelated suite partway through a full run. A structured helper is
+    /// how every other suite in this target does it.
+    private func withBareApp(_ test: (Request) async throws -> Void) async throws {
+        let app = try await Application.make(.testing)
+        do {
+            try await test(Request(application: app, on: app.eventLoopGroup.next()))
+        } catch {
+            try await app.asyncShutdown()
+            throw error
+        }
+        try await app.asyncShutdown()
+    }
+
     // MARK: - Read tools
 
     @Test("The assistant can see crypto holdings")
@@ -35,57 +55,54 @@ struct AIGroundworkTests {
     /// cache is indistinguishable from a broken one.
     @Test("The in-memory cache round-trips a value and misses on an unknown key")
     func inMemoryCacheRoundTrips() async throws {
-        let app = try await Application.make(.testing)
-        defer { Task { try? await app.asyncShutdown() } }
-        let req = Request(application: app, on: app.eventLoopGroup.next())
-        let cache = InMemoryAIResponseCache()
+        try await withBareApp { req in
+            let cache = InMemoryAIResponseCache()
 
-        struct Payload: Codable, Equatable {
-            let text: String
+            struct Payload: Codable, Equatable {
+                let text: String
+            }
+
+            #expect(await cache.get("absent", as: Payload.self, on: req) == nil)
+
+            await cache.set("k", value: Payload(text: "hello"), ttlSeconds: 3600, on: req)
+            #expect(await cache.get("k", as: Payload.self, on: req) == Payload(text: "hello"))
+
+            // Keys are independent, so one feature's entry cannot answer another's.
+            #expect(await cache.get("other", as: Payload.self, on: req) == nil)
+
+            cache.removeAll()
+            #expect(await cache.get("k", as: Payload.self, on: req) == nil)
         }
-
-        #expect(await cache.get("absent", as: Payload.self, on: req) == nil)
-
-        await cache.set("k", value: Payload(text: "hello"), ttlSeconds: 3600, on: req)
-        #expect(await cache.get("k", as: Payload.self, on: req) == Payload(text: "hello"))
-
-        // Keys are independent, so one feature's entry cannot answer another's.
-        #expect(await cache.get("other", as: Payload.self, on: req) == nil)
-
-        cache.removeAll()
-        #expect(await cache.get("k", as: Payload.self, on: req) == nil)
     }
 
     @Test("A decode mismatch is a miss, not a crash")
     func cacheDecodeMismatchIsAMiss() async throws {
-        let app = try await Application.make(.testing)
-        defer { Task { try? await app.asyncShutdown() } }
-        let req = Request(application: app, on: app.eventLoopGroup.next())
-        let cache = InMemoryAIResponseCache()
+        try await withBareApp { req in
+            let cache = InMemoryAIResponseCache()
 
-        struct Written: Codable { let text: String }
-        struct Expected: Codable { let count: Int }
+            struct Written: Codable { let text: String }
+            struct Expected: Codable { let count: Int }
 
-        await cache.set("k", value: Written(text: "hello"), ttlSeconds: 60, on: req)
-        // A cache key whose shape changed between deploys must degrade to a
-        // regeneration rather than taking the request down. This is why cache
-        // keys carry a version segment.
-        #expect(await cache.get("k", as: Expected.self, on: req) == nil)
+            await cache.set("k", value: Written(text: "hello"), ttlSeconds: 60, on: req)
+            // A cache key whose shape changed between deploys must degrade to a
+            // regeneration rather than taking the request down. This is why cache
+            // keys carry a version segment.
+            #expect(await cache.get("k", as: Expected.self, on: req) == nil)
+        }
     }
 
     @Test("Redis absent means every read is a miss and every write is a no-op")
     func redisCacheWithoutRedisIsInert() async throws {
-        let app = try await Application.make(.testing)
-        defer { Task { try? await app.asyncShutdown() } }
-        let req = Request(application: app, on: app.eventLoopGroup.next())
-        // `.testing` configures no Redis, which is the degraded path in
-        // production too: pay for the call again rather than fail the request.
-        let cache = RedisJSONCache(label: "test")
+        try await withBareApp { req in
+            // `.testing` configures no Redis, which is the degraded path in
+            // production too: pay for the call again rather than fail the request.
+            let cache = RedisJSONCache(label: "test")
 
-        struct Payload: Codable { let text: String }
+            struct Payload: Codable { let text: String }
 
-        await cache.set("k", value: Payload(text: "hello"), ttlSeconds: 60, on: req)
-        #expect(await cache.get("k", as: Payload.self, on: req) == nil)
+            await cache.set("k", value: Payload(text: "hello"), ttlSeconds: 60, on: req)
+            #expect(await cache.get("k", as: Payload.self, on: req) == nil)
+        }
     }
 
     // MARK: - Highlight builders
