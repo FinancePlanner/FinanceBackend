@@ -1,5 +1,7 @@
 import Fluent
 import Foundation
+import Redis
+import RediStack
 import StockPlanShared
 import Vapor
 
@@ -25,11 +27,82 @@ enum MessagingService {
             return try await handleUnlinked(inbound, req: req)
         }
 
-        if let handled = try await MessagingCommands.run(inbound, userId: link.userId, req: req) {
-            return handled
+        // The command path reads real data, so it is metered. The assistant path
+        // below is metered by its own monthly quota and is left alone.
+        if MessagingCommands.parse(inbound.text) != nil,
+           try await !allowCommand(inbound, req: req)
+        {
+            return OutboundMessage(text: "Slow down a moment — try that again shortly.")
         }
 
-        return try await assistantTurn(inbound, userId: link.userId, req: req)
+        switch try await MessagingCommands.run(inbound, userId: link.userId, req: req) {
+        case let .reply(message):
+            return message
+        case let .assistant(question):
+            return try await assistantTurn(inbound, userId: link.userId, req: req, overrideText: question)
+        case nil:
+            return try await assistantTurn(inbound, userId: link.userId, req: req)
+        }
+    }
+
+    // MARK: - Command rate limiting
+
+    /// Commands per chat per minute.
+    ///
+    /// The Telegram path gets neither `RateLimitMiddleware` (route middleware,
+    /// and the webhook is registered ungrouped) nor `AIDailyCap`. Assistant
+    /// turns are still bounded by the monthly quota, but the data commands
+    /// deliberately spend no quota at all — so without this one linked chat
+    /// could loop `/portfolio` as fast as Telegram delivers, against real
+    /// market-data and database reads.
+    static let commandsPerMinute = 20
+
+    /// Whether a command is allowed, given what the counter managed to say.
+    ///
+    /// Split from the Redis call because this is the part that can be wrong in a
+    /// way that matters: failing *open* in production would leave the bot
+    /// unmetered, and no test can reach the counting path — `configure` disables
+    /// Redis outright in the testing environment
+    /// (`ConfigureBootstrap.swift`), so the branches are only checkable here.
+    ///
+    /// `count` is nil when there was no counter to ask: Redis unconfigured, or
+    /// the call failed.
+    static func commandAllowance(
+        count: Int?,
+        limit: Int,
+        isProduction: Bool
+    ) throws -> Bool {
+        guard let count else {
+            // Mirrors RateLimitMiddleware and MessagingLinkService: production
+            // refuses to run unmetered; development does not require a Redis to
+            // try the bot locally.
+            if isProduction {
+                throw Abort(.serviceUnavailable, reason: "Rate limiting is unavailable.")
+            }
+            return true
+        }
+        return count <= limit
+    }
+
+    /// Mirrors `MessagingLinkService.allowRedeemAttempt`.
+    private static func allowCommand(_ inbound: InboundMessage, req: Request) async throws -> Bool {
+        let isProduction = req.application.environment == .production
+        guard req.application.redis.configuration != nil else {
+            return try commandAllowance(count: nil, limit: commandsPerMinute, isProduction: isProduction)
+        }
+        let key = RedisKey("ratelimit:messaging-command:\(inbound.platform):\(inbound.externalID)")
+        do {
+            let count = try await req.redis.increment(key).get()
+            if count == 1 {
+                _ = try await req.redis.expire(key, after: .seconds(60)).get()
+            }
+            return try commandAllowance(count: count, limit: commandsPerMinute, isProduction: isProduction)
+        } catch is Abort {
+            throw Abort(.serviceUnavailable, reason: "Rate limiting is unavailable.")
+        } catch {
+            req.logger.error("messaging_command_rate_limit_unavailable platform=\(inbound.platform)")
+            return try commandAllowance(count: nil, limit: commandsPerMinute, isProduction: isProduction)
+        }
     }
 
     // MARK: - Identity and dedupe
@@ -95,7 +168,8 @@ enum MessagingService {
     private static func assistantTurn(
         _ inbound: InboundMessage,
         userId: UUID,
-        req: Request
+        req: Request,
+        overrideText: String? = nil
     ) async throws -> OutboundMessage {
         // Strip how the user addressed Q before anything else reads the words.
         //
@@ -109,7 +183,9 @@ enum MessagingService {
         // handleUnlinked, slash commands have already had their pass, and
         // callback payloads (norviq:confirm:<uuid>) start with "n" so the
         // stripper leaves them alone.
-        let text = AssistantAddress.strip(inbound.text)
+        // `overrideText` is a data command that carried a question: the command
+        // word is already gone, so only the question remains to be addressed.
+        let text = AssistantAddress.strip(overrideText ?? inbound.text)
 
         // A confirmation resolves a proposal instead of starting a turn, and
         // costs no quota — the user is answering us, not asking.
@@ -156,24 +232,8 @@ enum MessagingService {
         }
     }
 
-    /// Reuses the newest live conversation so Telegram and the browser are the
-    /// same thread — ask on the phone, scroll back on the desktop.
     private static func resolveConversation(userId: UUID, req: Request) async throws -> AIConversation {
-        if let existing = try await AIConversation.query(on: req.db)
-            .filter(\.$userId == userId)
-            .filter(\.$expiresAt > Date())
-            .sort(\.$updatedAt, .descending)
-            .first()
-        {
-            return existing
-        }
-        let conversation = try AIConversation(
-            userId: userId,
-            titleEncrypted: req.userPIIEncryptionService.encryptString("Telegram"),
-            expiresAt: Date().addingTimeInterval(30 * 86400)
-        )
-        try await conversation.create(on: req.db)
-        return conversation
+        try await MessagingConversations.resolve(userId: userId, req: req)
     }
 
     // MARK: - Confirmations

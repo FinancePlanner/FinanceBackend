@@ -150,34 +150,21 @@ struct DefaultAIInsightsService: AIInsightsService {
         return values
     }
 
+    /// Number and month rendering live in `MoneyFormat`, shared with the
+    /// messaging replies so both say a number the same way.
     private static func formatNumber(_ value: Double) -> String {
-        let formatter = NumberFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.numberStyle = .decimal
-        formatter.usesGroupingSeparator = true
-        formatter.groupingSeparator = ","
-        formatter.minimumFractionDigits = 2
-        formatter.maximumFractionDigits = 2
-        return formatter.string(from: NSNumber(value: value)) ?? String(format: "%.2f", value)
+        MoneyFormat.number(value)
     }
 
     private static func formatPercent(_ value: Double) -> String {
-        "\(formatNumber(value))%"
+        MoneyFormat.percent(value)
     }
 
     private static func trend(_ value: Double) -> String {
-        if value > 0 {
-            return "up"
-        }
-        if value < 0 {
-            return "down"
-        }
-        return "flat"
+        MoneyFormat.trend(value)
     }
 
     private static func currentMonthStart() -> Date {
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(secondsFromGMT: 0) ?? .gmt
-        return calendar.date(from: calendar.dateComponents([.year, .month], from: Date())) ?? Date()
+        MoneyFormat.currentMonthStart()
     }
 }

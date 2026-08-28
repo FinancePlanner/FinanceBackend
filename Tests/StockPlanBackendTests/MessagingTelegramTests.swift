@@ -202,7 +202,55 @@ struct MessagingCommandTests {
         let names = MessagingCommands.published().map(\.name)
         // /start is intentionally unpublished: Telegram shows a START button
         // anyway, and listing it invites re-running finished pairing.
-        #expect(names == ["help", "unlink"])
+        #expect(names == [
+            "finance", "portfolio", "budget", "expenses", "news",
+            "clear", "help", "unlink",
+        ])
+        #expect(!names.contains("start"))
+    }
+
+    /// The command list is written down three times — the constants, the menu,
+    /// and the help text — and only the first two are checked against each other
+    /// by `publishedMenu`. This closes the triangle.
+    @Test("Every published command is named in the help text")
+    func helpTextCoversPublishedMenu() {
+        for name in MessagingCommands.published().map(\.name) {
+            #expect(
+                MessagingCommands.helpText.contains("/\(name)"),
+                "/\(name) is published but missing from helpText"
+            )
+        }
+    }
+
+    @Test("Help text tells people how to address Q directly")
+    func helpTextMentionsAddressing() {
+        // @Q already works via AssistantAddress; the only gap was that nothing
+        // said so.
+        #expect(MessagingCommands.helpText.contains("@Q"))
+    }
+
+    @Test("The command limiter fails closed in production and open in development")
+    func commandAllowanceBranches() throws {
+        // Within the allowance, and one past it.
+        #expect(try MessagingService.commandAllowance(count: 20, limit: 20, isProduction: true))
+        #expect(try !MessagingService.commandAllowance(count: 21, limit: 20, isProduction: true))
+
+        // No counter to ask. Production must refuse rather than run unmetered;
+        // a developer without a Redis must still be able to try the bot.
+        #expect(throws: (any Error).self) {
+            try MessagingService.commandAllowance(count: nil, limit: 20, isProduction: true)
+        }
+        #expect(try MessagingService.commandAllowance(count: nil, limit: 20, isProduction: false))
+    }
+
+    @Test("Data commands are parsed bare and with a trailing question")
+    func dataCommandParsing() {
+        #expect(MessagingCommands.parse("/budget")?.argument == "")
+        #expect(MessagingCommands.parse("/budget how do I cut it?")?.argument == "how do I cut it?")
+        #expect(MessagingCommands.parse("/portfolio@Norviq_bot")?.command == "/portfolio")
+        #expect(MessagingCommands.parse("/EXPENSES")?.command == "/expenses")
+        #expect(MessagingCommands.dataCommands.contains("/news"))
+        #expect(!MessagingCommands.dataCommands.contains("/help"))
     }
 }
 
