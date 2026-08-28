@@ -274,6 +274,111 @@ struct MessagingLinkingTests {
         }
     }
 
+    // MARK: - Data commands
+
+    /// The whole point of these commands: they answer from the database, so no
+    /// model is called, no OpenRouter credits are spent, and no turn comes off
+    /// the monthly allowance. `ExplodingChatClient` throws if the model is
+    /// reached, so a passing test is the proof.
+    @Test("Every data command answers without touching the model")
+    func dataCommandsNeverReachTheModel() async throws {
+        try await withApp { app in
+            let user = try await registerUser(app: app)
+            let req = backgroundRequest(app)
+            try await MessagingLink(
+                userId: user.userId, platform: MessagingPlatform.telegram, externalID: "4242"
+            ).create(on: app.db)
+            app.openAIChatClient = ExplodingChatClient()
+
+            // No Entitlement row and BYPASS_BILLING=false, so this really is a
+            // free user: every command must still answer.
+            for (index, command) in ["/finance", "/portfolio", "/budget", "/expenses", "/news"].enumerated() {
+                let reply = try await MessagingService.handle(
+                    inbound(command, updateID: Int64(index + 1)), req: req
+                )
+                #expect(!reply.text.isEmpty, "\(command) returned nothing")
+                #expect(!reply.silent, "\(command) was silent")
+            }
+
+            let usage = try await AIAssistantUsage.query(on: app.db).count()
+            #expect(usage == 0)
+        }
+    }
+
+    @Test("A data command carrying a question goes to the assistant instead")
+    func dataCommandWithQuestionFallsThroughToTheModel() async throws {
+        try await withApp { app in
+            let user = try await registerUser(app: app)
+            try await Entitlement(userId: user.userId, level: "pro").save(on: app.db)
+            let req = backgroundRequest(app)
+            try await MessagingLink(
+                userId: user.userId, platform: MessagingPlatform.telegram, externalID: "4242"
+            ).create(on: app.db)
+            app.openAIChatClient = FixedReplyChatClient(text: "Cut the fun pillar first.")
+
+            let reply = try await MessagingService.handle(
+                inbound("/budget how do I cut it?"), req: req
+            )
+
+            #expect(reply.text == "Cut the fun pillar first.")
+            let usage = try await AIAssistantUsage.query(on: app.db).count()
+            #expect(usage == 1)
+        }
+    }
+
+    @Test("A bare data command does not spend a turn even when the model would answer")
+    func bareDataCommandDoesNotSpendATurn() async throws {
+        try await withApp { app in
+            let user = try await registerUser(app: app)
+            let req = backgroundRequest(app)
+            try await MessagingLink(
+                userId: user.userId, platform: MessagingPlatform.telegram, externalID: "4242"
+            ).create(on: app.db)
+            app.openAIChatClient = FixedReplyChatClient(text: "prose the model would have written")
+
+            let reply = try await MessagingService.handle(inbound("/budget"), req: req)
+
+            #expect(reply.text != "prose the model would have written")
+            #expect(reply.text.contains("Budget"))
+            let usage = try await AIAssistantUsage.query(on: app.db).count()
+            #expect(usage == 0)
+        }
+    }
+
+    // MARK: - /clear
+
+    @Test("/clear starts a new thread without deleting the old one")
+    func clearStartsAFreshConversation() async throws {
+        try await withApp { app in
+            let user = try await registerUser(app: app)
+            try await Entitlement(userId: user.userId, level: "pro").save(on: app.db)
+            let req = backgroundRequest(app)
+            try await MessagingLink(
+                userId: user.userId, platform: MessagingPlatform.telegram, externalID: "4242"
+            ).create(on: app.db)
+            app.openAIChatClient = FixedReplyChatClient(text: "noted")
+
+            // A turn first, so there is a thread to leave behind.
+            _ = try await MessagingService.handle(inbound("remember this", updateID: 1), req: req)
+            let first = try #require(try await AIConversation.query(on: app.db).first())
+
+            let reply = try await MessagingService.handle(inbound("/clear", updateID: 2), req: req)
+            #expect(reply.text.hasPrefix("Fresh start"))
+
+            // Two conversations now exist: nothing was destroyed.
+            let all = try await AIConversation.query(on: app.db).all()
+            #expect(all.count == 2)
+            #expect(all.contains { $0.id == first.id })
+
+            // And the next turn lands on the new one, not the old.
+            _ = try await MessagingService.handle(inbound("and this", updateID: 3), req: req)
+            let messagesOnFirst = try await AIAssistantMessage.query(on: app.db)
+                .filter(\.$conversation.$id == first.requireID())
+                .count()
+            #expect(messagesOnFirst == 2) // the original user message + reply, nothing new
+        }
+    }
+
     @Test("/unlink disconnects the chat")
     func unlinkCommand() async throws {
         try await withApp { app in

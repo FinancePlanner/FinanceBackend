@@ -31,8 +31,6 @@ final class TelegramPoller: LifecycleHandler, @unchecked Sendable {
                 url: URI(string: "/internal/telegram-poll"),
                 on: application.eventLoopGroup.next()
             )
-            await client.registerCommands(req: req)
-
             while !Task.isCancelled {
                 do {
                     let updates = try await client.getUpdates(offset: offset, req: req)

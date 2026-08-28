@@ -268,10 +268,15 @@ public func configure(_ app: Application) async throws {
         logger: app.logger
     )
     app.telegramConfiguration = telegramConfiguration
-    if telegramConfiguration != nil {
+    if let telegramConfiguration {
         // Registered in both modes: a webhook deployment still runs turns
         // detached, and they must not outlive the application.
         app.lifecycle.use(TelegramTurnDrain())
+        // Also both modes. The menu has nothing to do with how updates arrive,
+        // and living on the poller meant production never published one.
+        app.lifecycle.use(TelegramCommandMenu(
+            client: TelegramClient(token: telegramConfiguration.botToken)
+        ))
     }
     if let telegramConfiguration, !telegramConfiguration.usesWebhook {
         app.lifecycle.use(TelegramPoller(client: TelegramClient(token: telegramConfiguration.botToken)))
