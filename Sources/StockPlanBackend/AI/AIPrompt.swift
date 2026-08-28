@@ -38,6 +38,17 @@ enum AIPrompt {
         return "\(instruction)\nSERVER-SELECTED FACTS:\n\(factsJSON)"
     }
 
+    /// Narrative for one screen of the app.
+    ///
+    /// Takes the instruction from `AIViewScope` rather than switching here, so
+    /// a new screen is one case in one enum. Same two-message shape and the
+    /// same `{"title","body"}` contract as `userPrompt` -- `system` is
+    /// untouched, because that constant prefix is what earns the prompt-caching
+    /// discount and it already forbids numbers in the prose and any advice.
+    static func viewSummaryUserPrompt(scope: AIViewScope, factsJSON: String) -> String {
+        "\(scope.instruction)\nSERVER-SELECTED FACTS:\n\(factsJSON)"
+    }
+
     /// One-sentence "why your portfolio moved" summary for the dashboard
     /// hero. Deliberately NOT an AIInsightKind: the shared enum is
     /// exhaustively switched and adding a case would force a package bump.
