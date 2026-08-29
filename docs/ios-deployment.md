@@ -48,6 +48,11 @@ private `FinancePlanner/norviq-certificates` repository. The `beta` lane may
 bootstrap or renew signing assets. Production release lanes consume the stored
 assets in read-only mode when running in CI.
 
+Replacing an expiring distribution certificate is documented separately in
+[update-mobile-certificates.md](update-mobile-certificates.md). Norviq shares
+Apple team `84X9WYBF36` with LuminaVault, and therefore shares Apple's
+three-certificate cap, so rotation is not independent between the two.
+
 ### Production approval gate
 
 Before the first production release, create a GitHub environment named exactly

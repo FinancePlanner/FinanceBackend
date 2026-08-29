@@ -250,6 +250,7 @@ func registerMigrations(_ app: Application) {
     app.migrations.add(AddExpenseCurrencyFields())
     app.migrations.add(CreateReportSuggestionDismissals())
     app.migrations.add(AddHouseholdPartnerDisplayNameToUsers())
+    app.migrations.add(AddHouseholdDefaultSharePercentToUsers())
     app.migrations.add(AddEncryptedUserProfileFields())
     app.migrations.add(AddTrialFields())
     // Must exist before BackfillEncryptedUserProfileFields: that job loads the

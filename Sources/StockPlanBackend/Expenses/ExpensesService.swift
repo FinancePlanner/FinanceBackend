@@ -240,16 +240,34 @@ final class DefaultExpensesService: ExpensesService {
 
     func getHouseholdPartner(userId: UUID, on db: any Database) async throws -> HouseholdPartnerProfileResponse {
         let user = try await requireUser(userId: userId, on: db)
-        return HouseholdPartnerProfileResponse(displayName: normalizePartnerName(user.householdPartnerDisplayName))
+        return HouseholdPartnerProfileResponse(
+            displayName: normalizePartnerName(user.householdPartnerDisplayName),
+            defaultUserSharePercent: user.householdDefaultUserSharePercent
+        )
     }
 
     func updateHouseholdPartner(userId: UUID, request: HouseholdPartnerProfileRequest, on db: any Database) async throws -> HouseholdPartnerProfileResponse {
         let user = try await requireUser(userId: userId, on: db)
         user.householdPartnerDisplayName = normalizePartnerName(request.displayName)
+        user.householdDefaultUserSharePercent = try normalizeDefaultSharePercent(request.defaultUserSharePercent)
         try user.encryptProtectedFields(using: req.userPIIEncryptionService)
         try await user.update(on: db)
         try user.hydrateProtectedFields(using: req.userPIIEncryptionService)
-        return HouseholdPartnerProfileResponse(displayName: user.householdPartnerDisplayName)
+        return HouseholdPartnerProfileResponse(
+            displayName: user.householdPartnerDisplayName,
+            defaultUserSharePercent: user.householdDefaultUserSharePercent
+        )
+    }
+
+    /// Validates the household default share. Rejects out-of-range values rather
+    /// than clamping, matching `normalizeSplit`. A nil clears the default, which
+    /// is distinct from setting it to zero.
+    private func normalizeDefaultSharePercent(_ value: Double?) throws -> Double? {
+        guard let value else { return nil }
+        guard (0 ... 100).contains(value) else {
+            throw Abort(.badRequest, reason: "defaultUserSharePercent must be between 0 and 100.")
+        }
+        return value
     }
 
     // MARK: - Snapshots

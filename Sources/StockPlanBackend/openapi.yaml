@@ -10738,6 +10738,16 @@ components:
         displayName:
           type: string
           nullable: true
+        defaultUserSharePercent:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 100
+          nullable: true
+          description: >-
+            Percentage of a shared item the account owner keeps, so 40 means the
+            partner covers 60%. Seeds newly created shared items; null clears the
+            household default and is distinct from 0.
 
     HouseholdPartnerProfileResponse:
       type: object
@@ -10745,6 +10755,15 @@ components:
         displayName:
           type: string
           nullable: true
+        defaultUserSharePercent:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 100
+          nullable: true
+          description: >-
+            Percentage of a shared item the account owner keeps. Null means no
+            household default has been set; clients fall back to 100.
 
     BudgetPlanItemRequest:
       type: object

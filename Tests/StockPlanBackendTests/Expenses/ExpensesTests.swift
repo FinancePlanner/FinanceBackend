@@ -446,6 +446,83 @@ struct ExpensesTests {
         }
     }
 
+    @Test("Household default share round trips and clears")
+    func householdDefaultSharePercent() async throws {
+        try await withExpensesApp { app in
+            let token = try await registerTestUser(app: app)
+
+            // A fresh profile has no household default; that is distinct from 100,
+            // which is what a client falls back to when none is set.
+            try await app.testing().test(.GET, "v1/expenses/partner", beforeRequest: { req in
+                req.headers.bearerAuthorization = .init(token: token)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let response = try res.content.decode(HouseholdPartnerProfileResponse.self)
+                #expect(response.defaultUserSharePercent == nil)
+            })
+
+            try await app.testing().test(.PUT, "v1/expenses/partner", beforeRequest: { req in
+                req.headers.bearerAuthorization = .init(token: token)
+                try req.content.encode(
+                    HouseholdPartnerProfileRequest(displayName: "Ana", defaultUserSharePercent: 40)
+                )
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let response = try res.content.decode(HouseholdPartnerProfileResponse.self)
+                #expect(response.defaultUserSharePercent == 40)
+            })
+
+            try await app.testing().test(.GET, "v1/expenses/partner", beforeRequest: { req in
+                req.headers.bearerAuthorization = .init(token: token)
+            }, afterResponse: { res async throws in
+                let response = try res.content.decode(HouseholdPartnerProfileResponse.self)
+                #expect(response.defaultUserSharePercent == 40)
+            })
+
+            // Sending nil clears the default rather than storing zero.
+            try await app.testing().test(.PUT, "v1/expenses/partner", beforeRequest: { req in
+                req.headers.bearerAuthorization = .init(token: token)
+                try req.content.encode(HouseholdPartnerProfileRequest(displayName: "Ana"))
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let response = try res.content.decode(HouseholdPartnerProfileResponse.self)
+                #expect(response.defaultUserSharePercent == nil)
+            })
+        }
+    }
+
+    @Test("Household default share accepts the bounds and rejects outside them")
+    func householdDefaultSharePercentBounds() async throws {
+        try await withExpensesApp { app in
+            let token = try await registerTestUser(app: app)
+
+            for accepted in [0.0, 100.0] {
+                try await app.testing().test(.PUT, "v1/expenses/partner", beforeRequest: { req in
+                    req.headers.bearerAuthorization = .init(token: token)
+                    try req.content.encode(
+                        HouseholdPartnerProfileRequest(defaultUserSharePercent: accepted)
+                    )
+                }, afterResponse: { res async throws in
+                    #expect(res.status == .ok)
+                    let response = try res.content.decode(HouseholdPartnerProfileResponse.self)
+                    #expect(response.defaultUserSharePercent == accepted)
+                })
+            }
+
+            // Rejected rather than clamped, matching normalizeSplit.
+            for rejected in [-1.0, 101.0] {
+                try await app.testing().test(.PUT, "v1/expenses/partner", beforeRequest: { req in
+                    req.headers.bearerAuthorization = .init(token: token)
+                    try req.content.encode(
+                        HouseholdPartnerProfileRequest(defaultUserSharePercent: rejected)
+                    )
+                }, afterResponse: { res async throws in
+                    #expect(res.status == .badRequest)
+                })
+            }
+        }
+    }
+
     @Test("Creating expense rejects invalid linked plan item id format")
     func expenseRejectsInvalidLinkedPlanItemIdFormat() async throws {
         try await withExpensesApp { app in

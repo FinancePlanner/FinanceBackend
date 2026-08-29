@@ -35,6 +35,11 @@ final class User: Model, Authenticatable, @unchecked Sendable {
     @OptionalField(key: "household_partner_display_name_encrypted")
     var householdPartnerDisplayNameEncrypted: Data?
 
+    /// Percentage of a shared item the owner keeps, seeding new shared items.
+    /// Null means no household default; see AddHouseholdDefaultSharePercentToUsers.
+    @OptionalField(key: "household_default_user_share_percent")
+    var householdDefaultUserSharePercent: Double?
+
     @OptionalField(key: "date_of_birth")
     private var dateOfBirthPlaintext: Date?
 
@@ -113,6 +118,7 @@ final class User: Model, Authenticatable, @unchecked Sendable {
         avatarURLString: String? = nil,
         bannerAvatarURLString: String? = nil,
         householdPartnerDisplayName: String? = nil,
+        householdDefaultUserSharePercent: Double? = nil,
         dateOfBirth: Date? = nil,
         failedLoginAttempts: Int = 0,
         lockoutUntil: Date? = nil,
@@ -132,6 +138,7 @@ final class User: Model, Authenticatable, @unchecked Sendable {
         self.bannerAvatarURLString = bannerAvatarURLString
         householdPartnerDisplayNamePlaintext = householdPartnerDisplayName
         decryptedHouseholdPartnerDisplayName = householdPartnerDisplayName
+        self.householdDefaultUserSharePercent = householdDefaultUserSharePercent
         dateOfBirthPlaintext = dateOfBirth
         decryptedDateOfBirth = dateOfBirth
         self.failedLoginAttempts = failedLoginAttempts

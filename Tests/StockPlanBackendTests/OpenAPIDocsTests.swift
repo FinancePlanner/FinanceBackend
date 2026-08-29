@@ -257,6 +257,7 @@ struct OpenAPIDocsTests {
                 #expect(body.contains("ExpenseSplitMode:"))
                 #expect(body.contains("HouseholdPartnerProfileRequest:"))
                 #expect(body.contains("HouseholdPartnerProfileResponse:"))
+                #expect(body.contains("defaultUserSharePercent:"))
                 #expect(body.contains("ReportsOverviewResponse:"))
                 #expect(body.contains("ReportSuggestionResponse:"))
                 #expect(body.contains("ReportSuggestionsResponse:"))
