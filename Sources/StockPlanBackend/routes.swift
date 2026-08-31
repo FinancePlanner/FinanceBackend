@@ -337,14 +337,10 @@ private func registerOpenAPIDocsRoutes(_ app: Application) throws {
     }
 
     app.get("openapi.yaml") { _ async throws -> Response in
-        guard let url = Bundle.module.url(forResource: "openapi", withExtension: "yaml") else {
-            throw Abort(.notFound, reason: "openapi.yaml is not bundled (check Package.swift resources)")
-        }
-
-        let data = try Data(contentsOf: url)
+        let yaml = try BundledOpenAPISpec.yamlString()
         var headers = HTTPHeaders()
         headers.replaceOrAdd(name: .contentType, value: "application/yaml; charset=utf-8")
-        return Response(status: .ok, headers: headers, body: .init(data: data))
+        return Response(status: .ok, headers: headers, body: .init(string: yaml))
     }
 
     app.get("docs") { _ async throws -> Response in
