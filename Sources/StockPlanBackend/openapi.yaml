@@ -2067,6 +2067,65 @@ paths:
           description: No quote available for the symbol
         '503':
           description: Market data provider unavailable or misconfigured
+  /v1/market/returns/batch:
+    get:
+      operationId: getMarketPeriodReturnsBatch
+      tags: [MarketData]
+      summary: Get 3M, 6M, and YTD percent returns for multiple symbols
+      description: >
+        Trailing 3-month, trailing 6-month, and calendar year-to-date percent
+        moves (percent points, 12.5 means +12.5%). Missing windows are null,
+        never 0. Up to 20 symbols. Cached as EOD data. Provider failures
+        degrade to null windows rather than 5xx.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: symbols
+          in: query
+          required: true
+          description: Comma-separated symbols, e.g. AAPL,MSFT,NVDA
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StockPeriodReturnsBatchResponse'
+        '400':
+          description: Missing symbols or more than 20 symbols
+        '401':
+          description: Unauthorized
+  /v1/market/returns/{symbol}:
+    get:
+      operationId: getMarketPeriodReturns
+      tags: [MarketData]
+      summary: Get 3M, 6M, and YTD percent returns for a symbol
+      description: >
+        Trailing 3-month, trailing 6-month, and calendar year-to-date percent
+        moves (percent points, 12.5 means +12.5%). Missing windows are null,
+        never 0. Cached as EOD data. Provider failures degrade to null windows
+        rather than 5xx.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StockPeriodReturnsResponse'
+        '400':
+          description: Missing symbol
+        '401':
+          description: Unauthorized
   /v1/market/news/general:
     get:
       operationId: getGeneralMarketNews
@@ -12648,6 +12707,39 @@ components:
           type: integer
           format: int64
       required: [date, open, high, low, close, volume]
+    StockPeriodReturnsResponse:
+      type: object
+      required: [symbol]
+      properties:
+        symbol:
+          type: string
+        threeMonth:
+          type: number
+          format: double
+          nullable: true
+          description: Trailing 3-month percent change in percent points (12.5 means +12.5%). Null when unavailable.
+        sixMonth:
+          type: number
+          format: double
+          nullable: true
+          description: Trailing 6-month percent change in percent points. Null when unavailable.
+        yearToDate:
+          type: number
+          format: double
+          nullable: true
+          description: Calendar year-to-date percent change in percent points. Null when unavailable.
+        asOf:
+          type: string
+          nullable: true
+          description: YYYY-MM-DD of the last close used, when known.
+    StockPeriodReturnsBatchResponse:
+      type: object
+      required: [returns]
+      properties:
+        returns:
+          type: array
+          items:
+            $ref: '#/components/schemas/StockPeriodReturnsResponse'
     MarketPressureResponse:
       type: object
       required: [symbol, asOf, temperature, label, volume, history]

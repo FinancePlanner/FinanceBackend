@@ -11,6 +11,8 @@ struct MarketDataController: RouteCollection {
 
         rateLimited.get("overview", use: overview)
         rateLimited.get("pressure", ":symbol", use: pressure)
+        rateLimited.get("returns", "batch", use: periodReturnsBatch)
+        rateLimited.get("returns", ":symbol", use: periodReturns)
         rateLimited.get("details", use: details)
         rateLimited.get("history", use: stockHistory)
         rateLimited.get("history", "archive", use: archivedStockHistory)
@@ -203,6 +205,38 @@ struct MarketDataController: RouteCollection {
     func pressure(req: Request) async throws -> MarketPressureResponse {
         let symbol = req.parameters.get("symbol") ?? ""
         return try await req.application.marketDataService.marketPressure(symbol: symbol, on: req)
+    }
+
+    @Sendable
+    func periodReturns(req: Request) async throws -> StockPeriodReturnsResponse {
+        guard let symbol = req.parameters.get("symbol"), !symbol.isEmpty else {
+            throw Abort(.badRequest, reason: "Missing symbol.")
+        }
+        return try await req.application.marketDataService.periodReturns(symbol: symbol, on: req)
+    }
+
+    @Sendable
+    func periodReturnsBatch(req: Request) async throws -> StockPeriodReturnsBatchResponse {
+        guard let symbols = req.query[String.self, at: "symbols"] else {
+            throw Abort(.badRequest, reason: "Missing query parameter `symbols`.")
+        }
+
+        let parsed = symbols
+            .split(separator: ",")
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        guard !parsed.isEmpty else {
+            throw Abort(.badRequest, reason: "At least one symbol is required.")
+        }
+        guard parsed.count <= PeriodReturnsConfig.batchLimit else {
+            throw Abort(
+                .badRequest,
+                reason: "Period-returns batch supports at most \(PeriodReturnsConfig.batchLimit) symbols."
+            )
+        }
+
+        return try await req.application.marketDataService.periodReturnsBatch(symbols: parsed, on: req)
     }
 
     @Sendable

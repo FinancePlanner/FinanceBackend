@@ -1061,6 +1061,109 @@ struct StockPlanBackendTests {
         }
     }
 
+    @Test("Period returns map FMP windows for a single symbol")
+    func periodReturnsHappyPath() async throws {
+        try await withApp { app in
+            let fmpState = TestFMPProviderState()
+            await fmpState.setPriceChange(
+                FMPStockPriceChange(symbol: "AAPL", threeMonth: 12.5, sixMonth: 15.3, yearToDate: 18.2),
+                for: "AAPL"
+            )
+            app.marketDataService = makeTestMarketService(
+                state: TestMarketProviderState(),
+                fmpProvider: TestFMPMarketDataProvider(state: fmpState),
+                fmpAccessTier: .premium
+            )
+            let (token, _) = try await registerTestUser(app: app, identifier: "returnshappy")
+
+            try await app.testing().test(.GET, "v1/market/returns/AAPL", beforeRequest: { req in
+                req.headers.bearerAuthorization = .init(token: token)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let body = try res.content.decode(StockPeriodReturnsResponse.self)
+                #expect(body.symbol == "AAPL")
+                #expect(body.threeMonth == 12.5)
+                #expect(body.sixMonth == 15.3)
+                #expect(body.yearToDate == 18.2)
+            })
+        }
+    }
+
+    @Test("Period returns degrade to nil windows when FMP fails")
+    func periodReturnsDegradesOnProviderFailure() async throws {
+        try await withApp { app in
+            let fmpState = TestFMPProviderState()
+            await fmpState.setPriceChangeThrows(true)
+            app.marketDataService = makeTestMarketService(
+                state: TestMarketProviderState(),
+                fmpProvider: TestFMPMarketDataProvider(state: fmpState),
+                fmpAccessTier: .premium
+            )
+            let (token, _) = try await registerTestUser(app: app, identifier: "returnsdegrade")
+
+            try await app.testing().test(.GET, "v1/market/returns/AAPL", beforeRequest: { req in
+                req.headers.bearerAuthorization = .init(token: token)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let body = try res.content.decode(StockPeriodReturnsResponse.self)
+                #expect(body.symbol == "AAPL")
+                #expect(body.threeMonth == nil)
+                #expect(body.sixMonth == nil)
+                #expect(body.yearToDate == nil)
+            })
+        }
+    }
+
+    @Test("Period returns batch returns each symbol and rejects more than 20")
+    func periodReturnsBatchAndCap() async throws {
+        try await withApp { app in
+            let fmpState = TestFMPProviderState()
+            await fmpState.setPriceChange(
+                FMPStockPriceChange(symbol: "AAPL", threeMonth: 12.5, sixMonth: nil, yearToDate: 18.2),
+                for: "AAPL"
+            )
+            await fmpState.setPriceChange(
+                FMPStockPriceChange(symbol: "MSFT", threeMonth: 8.1, sixMonth: 10.4, yearToDate: 14.0),
+                for: "MSFT"
+            )
+            app.marketDataService = makeTestMarketService(
+                state: TestMarketProviderState(),
+                fmpProvider: TestFMPMarketDataProvider(state: fmpState),
+                fmpAccessTier: .premium
+            )
+            let (token, _) = try await registerTestUser(app: app, identifier: "returnsbatch")
+
+            try await app.testing().test(
+                .GET,
+                "v1/market/returns/batch?symbols=AAPL,MSFT",
+                beforeRequest: { req in
+                    req.headers.bearerAuthorization = .init(token: token)
+                },
+                afterResponse: { res async throws in
+                    #expect(res.status == .ok)
+                    let body = try res.content.decode(StockPeriodReturnsBatchResponse.self)
+                    #expect(body.returns.count == 2)
+                    #expect(body.returns[0].symbol == "AAPL")
+                    #expect(body.returns[0].sixMonth == nil)
+                    #expect(body.returns[1].symbol == "MSFT")
+                    #expect(body.returns[1].yearToDate == 14.0)
+                }
+            )
+
+            let tooMany = (1 ... 21).map { "S\($0)" }.joined(separator: ",")
+            try await app.testing().test(
+                .GET,
+                "v1/market/returns/batch?symbols=\(tooMany)",
+                beforeRequest: { req in
+                    req.headers.bearerAuthorization = .init(token: token)
+                },
+                afterResponse: { res async throws in
+                    #expect(res.status == .badRequest)
+                }
+            )
+        }
+    }
+
     @Test("Pressure temperature formula behaves at the extremes")
     func pressureTemperatureFormula() {
         #expect(pressureTemperature(relativeVolume: 0, changePct: 0, insider: nil) == 50)
@@ -4216,6 +4319,33 @@ struct StockPlanBackendTests {
             return pressureInsiderResult
         }
 
+        private var priceChangeBySymbol: [String: FMPStockPriceChange] = [:]
+        private var priceChangeShouldThrow = false
+        private var priceChangeCallCount = 0
+
+        func setPriceChange(_ item: FMPStockPriceChange, for symbol: String) {
+            priceChangeBySymbol[symbol.uppercased()] = item
+        }
+
+        func setPriceChangeThrows(_ value: Bool) {
+            priceChangeShouldThrow = value
+        }
+
+        func priceChange(for symbol: String) throws -> [FMPStockPriceChange] {
+            priceChangeCallCount += 1
+            if priceChangeShouldThrow {
+                throw OverviewStubError()
+            }
+            if let item = priceChangeBySymbol[symbol.uppercased()] {
+                return [item]
+            }
+            return []
+        }
+
+        func priceChangeCalls() -> Int {
+            priceChangeCallCount
+        }
+
         private var balanceSheetRequests: [FinancialGrowthRequestCapture] = []
         private var cashFlowRequests: [FinancialGrowthRequestCapture] = []
         private var incomeStatementRequests: [FinancialGrowthRequestCapture] = []
@@ -5055,6 +5185,10 @@ struct StockPlanBackendTests {
 
         func fetchInsiderTrades(symbol _: String, limit _: Int, on _: Request) async throws -> [FMPInsiderTrade] {
             try await state.pressureInsiders()
+        }
+
+        func stockPriceChange(symbol: String, on _: Request) async throws -> [FMPStockPriceChange] {
+            try await state.priceChange(for: symbol)
         }
 
         // MARK: Market overview stubs
