@@ -5,9 +5,19 @@ struct NewsController: RouteCollection {
     func boot(routes: any RoutesBuilder) throws {
         let protected = routes.grouped(SessionToken.authenticator(), SessionToken.guardMiddleware())
 
+        // The feed is the one news read exposed to third-party tokens (the MCP
+        // `get_news` tool, source=tracked). It takes the scoped authenticator so a
+        // personal access token with market:read is accepted; every other news
+        // route stays first-party JWT only, so a PAT can never create, edit, or
+        // delete items regardless of its scopes.
+        let scopedFeed = routes
+            .grouped(ScopedBearerAuthenticator(), SessionToken.guardMiddleware())
+            .grouped("news")
+            .grouped(ScopeRequirementMiddleware(.marketRead))
+        scopedFeed.get("feed", use: feedNews)
+
         let news = protected.grouped("news")
         news.get(use: listNews)
-        news.get("feed", use: feedNews)
         news.post(use: createNews)
         news.post("sync", use: syncNews)
         news.post("view", use: recordNewsView)

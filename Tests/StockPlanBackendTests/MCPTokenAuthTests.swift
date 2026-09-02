@@ -93,6 +93,47 @@ struct MCPTokenAuthTests {
         }
     }
 
+    @Test("PAT with market:read can read the news feed (MCP get_news, source=tracked)")
+    func patMarketReadReadsNewsFeed() async throws {
+        try await withApp { app in
+            let user = try await registerUser(app: app)
+            let pat = try await mintPAT(app: app, userId: user.userId, scopes: [.marketRead])
+            try await app.testing().test(.GET, "v1/news/feed?limit=5", beforeRequest: { req in
+                req.headers.bearerAuthorization = .init(token: pat)
+            }, afterResponse: { res async in
+                #expect(res.status == .ok)
+            })
+        }
+    }
+
+    @Test("PAT without market:read is forbidden from the news feed")
+    func patWithoutMarketReadForbiddenFromNewsFeed() async throws {
+        try await withApp { app in
+            let user = try await registerUser(app: app)
+            let pat = try await mintPAT(app: app, userId: user.userId, scopes: [.expensesRead])
+            try await app.testing().test(.GET, "v1/news/feed", beforeRequest: { req in
+                req.headers.bearerAuthorization = .init(token: pat)
+            }, afterResponse: { res async in
+                #expect(res.status == .forbidden)
+            })
+        }
+    }
+
+    @Test("PAT can never write news items, whatever its scopes")
+    func patCannotCreateNews() async throws {
+        try await withApp { app in
+            let user = try await registerUser(app: app)
+            let pat = try await mintPAT(app: app, userId: user.userId, scopes: [.marketRead, .expensesWrite])
+            try await app.testing().test(.POST, "v1/news", beforeRequest: { req in
+                req.headers.bearerAuthorization = .init(token: pat)
+                struct NewsWrite: Content { let symbol: String; let headline: String }
+                try req.content.encode(NewsWrite(symbol: "AAPL", headline: "x"))
+            }, afterResponse: { res async in
+                #expect(res.status == .unauthorized)
+            })
+        }
+    }
+
     @Test("PAT with expenses:write can create an expense")
     func patWriteCreatesExpense() async throws {
         try await withApp { app in
