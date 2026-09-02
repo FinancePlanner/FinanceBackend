@@ -15,6 +15,21 @@ import VaporAPNS
 public func configure(_ app: Application) async throws {
     try ProductionConfiguration.validate(for: app)
 
+    // bcrypt runs on the NIO thread pool via `req.password.async` (never on the
+    // cooperative pool); cost 11 keeps a hash near 100 ms instead of ~250 ms at
+    // the default 12 so two concurrent logins cannot starve every async handler.
+    app.passwords.use(.bcrypt(cost: 11))
+
+    // Outbound HTTP defaults. Providers set their own per-request deadlines
+    // (15 s Finnhub … 90 s DeepAPI), so only the connect timeout is global; the
+    // per-host connection cap stops one slow upstream from holding every socket
+    // and file descriptor the pod has while requests pile up behind it.
+    app.http.client.configuration.timeout = .init(connect: .seconds(10), read: nil)
+    app.http.client.configuration.connectionPool = .init(
+        idleTimeout: .seconds(60),
+        concurrentHTTP1ConnectionsPerHostSoftLimit: 16
+    )
+
     if app.environment == .testing {
         app.logger.logLevel = .warning
     }

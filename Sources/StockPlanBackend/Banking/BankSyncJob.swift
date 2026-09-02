@@ -35,6 +35,10 @@ struct BankSyncJob: LifecycleHandler {
     }
 
     private func runSync(app: Application) async {
+        await JobLock.runAsLeader(app, name: "bank_sync_job") { await runSyncAsLeader(app: app) }
+    }
+
+    private func runSyncAsLeader(app: Application) async {
         do {
             let connections = try await BankConnection.query(on: app.db)
                 .filter(\.$status == BankConnectionStatus.active.rawValue)

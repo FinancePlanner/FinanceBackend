@@ -40,6 +40,10 @@ final class EarningsNotificationPoller: LifecycleHandler, @unchecked Sendable {
     }
 
     private func tick(_ app: Application) async {
+        await JobLock.runAsLeader(app, name: "earnings_notification_poller") { await self.tickAsLeader(app) }
+    }
+
+    private func tickAsLeader(_ app: Application) async {
         let req = Request(application: app, on: app.eventLoopGroup.next())
         await app.earningsNotificationEvaluator.evaluateUpcomingEarnings(req: req)
     }

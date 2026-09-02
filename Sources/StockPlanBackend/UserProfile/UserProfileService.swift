@@ -8,7 +8,7 @@ protocol UserProfileService: Sendable {
     func update(userId: UUID, payload: UpdateUserProfileRequest, on db: any Database) async throws -> UpdateUserProfileResponse
     func updateUsername(userId: UUID, payload: UpdateUsernameRequest, on db: any Database) async throws -> UpdateUserProfileResponse
     func updateEmail(userId: UUID, payload: UpdateEmailRequest, on db: any Database) async throws -> UpdateUserProfileResponse
-    func updatePassword(userId: UUID, payload: UpdatePasswordRequest, on db: any Database) async throws
+    func updatePassword(userId: UUID, payload: UpdatePasswordRequest, on req: Request) async throws
     func delete(userId: UUID, on db: any Database) async throws -> DeleteUserProfileResponse
 }
 
@@ -95,16 +95,17 @@ struct DefaultUserProfileService: UserProfileService {
         return UpdateUserProfileResponse(userProfile: makeProfile(from: user))
     }
 
-    func updatePassword(userId: UUID, payload: UpdatePasswordRequest, on db: any Database) async throws {
+    func updatePassword(userId: UUID, payload: UpdatePasswordRequest, on req: Request) async throws {
+        let db = req.db
         let user = try await requireUser(id: userId, on: db)
 
         // Verify current password
-        guard try Bcrypt.verify(payload.currentPassword, created: user.passwordHash) else {
+        guard try await req.password.async.verify(payload.currentPassword, created: user.passwordHash).get() else {
             throw Abort(.unauthorized, reason: "Invalid current password")
         }
 
         // Hash and save new password
-        user.passwordHash = try Bcrypt.hash(payload.newPassword)
+        user.passwordHash = try await req.password.async.hash(payload.newPassword).get()
         try await repo.save(user, on: db)
     }
 

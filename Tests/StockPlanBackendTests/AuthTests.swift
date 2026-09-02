@@ -1123,7 +1123,7 @@ struct AuthTests {
             let repo = DatabaseAuthRepository()
             let user = try await repo.createUser(
                 email: "resetattempts@example.com",
-                passwordHash: req.password.hash("OldPassword123!"),
+                passwordHash: req.password.async.hash("OldPassword123!").get(),
                 on: app.db
             )
             let userId = try #require(user.id)

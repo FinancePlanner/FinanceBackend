@@ -31,6 +31,10 @@ final class GoalPlanningDailyJob: LifecycleHandler, @unchecked Sendable {
     }
 
     func runOnce(_ app: Application) async {
+        await JobLock.runAsLeader(app, name: "goal_planning_daily_job") { await self.runOnceAsLeader(app) }
+    }
+
+    func runOnceAsLeader(_ app: Application) async {
         let req = Request(application: app, on: app.eventLoopGroup.next())
         do {
             let goals = try await FinancialGoalModel.query(on: req.db)

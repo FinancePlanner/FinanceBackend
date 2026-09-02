@@ -72,6 +72,10 @@ final class SentimentAggregationJob: LifecycleHandler, @unchecked Sendable {
     }
 
     private func execute(_ app: Application) async {
+        await JobLock.runAsLeader(app, name: "sentiment_aggregation_job") { await self.executeAsLeader(app) }
+    }
+
+    private func executeAsLeader(_ app: Application) async {
         let req = Request(application: app, on: app.eventLoopGroup.next())
         do {
             let summary = try await app.sentimentAggregationService.runDailyAggregation(on: req)

@@ -74,6 +74,10 @@ final class MacroRefreshJob: LifecycleHandler, @unchecked Sendable {
     }
 
     private func tick(_ app: Application, force: Bool = false) async {
+        await JobLock.runAsLeader(app, name: "macro_refresh_job") { await self.tickAsLeader(app, force: force) }
+    }
+
+    private func tickAsLeader(_ app: Application, force: Bool = false) async {
         let now = Date()
         for country in app.macroProviderRegistry.enabledCountries {
             // Task cancellation is cooperative: `shutdown` cancels this task,

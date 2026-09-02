@@ -40,6 +40,10 @@ final class TargetAlertPoller: LifecycleHandler, @unchecked Sendable {
     }
 
     private func tick(_ app: Application) async {
+        await JobLock.runAsLeader(app, name: "target_alert_poller") { await self.tickAsLeader(app) }
+    }
+
+    private func tickAsLeader(_ app: Application) async {
         let req = Request(application: app, on: app.eventLoopGroup.next())
         await app.targetAlertEvaluator.evaluateUnresolvedTargets(req: req)
     }

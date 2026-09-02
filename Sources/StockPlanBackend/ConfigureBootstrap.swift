@@ -61,8 +61,18 @@ func configurePersistence(_ app: Application) async throws {
         postgresConfiguration.searchPath = [testDatabaseSchema]
     }
 
+    // Fluent's default is one connection per event loop, which on an 8-loop pod
+    // caps the pool at 8 Postgres connections shared between request handlers
+    // and 28 background pollers. Size it explicitly; keep Postgres
+    // `max_connections` >= replicas * event loops * this value.
+    let maxConnectionsPerEventLoop = Environment.get("DATABASE_MAX_CONNECTIONS_PER_EVENT_LOOP")
+        .flatMap(Int.init(_:)) ?? 4
     app.databases.use(
-        DatabaseConfigurationFactory.postgres(configuration: postgresConfiguration),
+        DatabaseConfigurationFactory.postgres(
+            configuration: postgresConfiguration,
+            maxConnectionsPerEventLoop: max(1, maxConnectionsPerEventLoop),
+            connectionPoolTimeout: .seconds(10)
+        ),
         as: .psql
     )
 
@@ -312,6 +322,7 @@ func registerMigrations(_ app: Application) {
     app.migrations.add(AddSourceToTickerSentimentPost())
     app.migrations.add(AddMessagingLinkConversation())
     app.migrations.add(CreateSentimentUniverseSymbol())
+    app.migrations.add(AddExpenseHotPathIndexes())
 }
 
 func envBool(_ key: String, default defaultValue: Bool) -> Bool {

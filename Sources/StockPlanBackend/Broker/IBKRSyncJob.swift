@@ -59,6 +59,10 @@ struct IBKRSyncJob: LifecycleHandler {
     }
 
     private func runSync(app: Application) async {
+        await JobLock.runAsLeader(app, name: "ibkr_sync_job") { await runSyncAsLeader(app: app) }
+    }
+
+    private func runSyncAsLeader(app: Application) async {
         app.logger.info("ibkr_sync_job starting scheduled sync")
 
         do {

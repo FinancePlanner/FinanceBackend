@@ -149,7 +149,7 @@ struct DefaultAuthService: AuthService {
             throw Abort(.conflict, reason: "Email already registered")
         }
 
-        let hash = try req.password.hash(password)
+        let hash = try await req.password.async.hash(password).get()
         let user: User
         do {
             user = try await repo.createUser(
@@ -199,7 +199,7 @@ struct DefaultAuthService: AuthService {
         try validatePassword(password)
 
         guard let user = try await repo.findUser(email: normalizedEmail, on: req.db) else {
-            _ = try? req.password.hash(password)
+            _ = try? await req.password.async.hash(password).get()
             throw Abort(.unauthorized, reason: "Invalid email or password")
         }
 
@@ -212,7 +212,7 @@ struct DefaultAuthService: AuthService {
             throw Abort(.forbidden, reason: message)
         }
 
-        let isValid = try req.password.verify(password, created: user.passwordHash)
+        let isValid = try await req.password.async.verify(password, created: user.passwordHash).get()
 
         if !isValid {
             // 2. Increment failed attempts and lock if necessary
@@ -306,7 +306,7 @@ struct DefaultAuthService: AuthService {
             throw Abort(.unauthorized, reason: "Invalid reset code")
         }
 
-        user.passwordHash = try req.password.hash(newPassword)
+        user.passwordHash = try await req.password.async.hash(newPassword).get()
         try await persistUser(user, on: req)
         try await repo.markPasswordResetTokenUsed(resetToken, usedAt: now, on: req.db)
 
@@ -510,7 +510,7 @@ struct DefaultAuthService: AuthService {
             on: req
         )
         let oauthPassword = randomURLSafeString(length: 48)
-        let oauthPasswordHash = try req.password.hash(oauthPassword)
+        let oauthPasswordHash = try await req.password.async.hash(oauthPassword).get()
 
         let user = try await repo.createUser(
             username: oauthUsername,

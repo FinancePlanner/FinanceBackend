@@ -56,7 +56,7 @@ struct UserProfileController: RouteCollection {
     func updatePassword(req: Request) async throws -> APIMessageResponse {
         let session = try req.auth.require(SessionToken.self)
         let payload = try req.content.decode(UpdatePasswordRequest.self)
-        try await req.application.userProfileService.updatePassword(userId: session.userId, payload: payload, on: req.db)
+        try await req.application.userProfileService.updatePassword(userId: session.userId, payload: payload, on: req)
         return APIMessageResponse(success: true, message: "Password updated successfully")
     }
 
