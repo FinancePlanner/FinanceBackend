@@ -12,6 +12,10 @@ struct StockPeriodReturnsResponse: Content, Equatable, Sendable {
     let sixMonth: Double?
     let yearToDate: Double?
     let asOf: String?
+
+    var hasUsableWindows: Bool {
+        threeMonth != nil || sixMonth != nil || yearToDate != nil
+    }
 }
 
 struct StockPeriodReturnsBatchResponse: Content, Equatable, Sendable {

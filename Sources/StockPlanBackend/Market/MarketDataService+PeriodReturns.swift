@@ -90,6 +90,10 @@ extension DefaultMarketDataService {
                 yearToDate: mapped.yearToDate,
                 asOf: mapped.asOf
             )
+            guard response.hasUsableWindows else {
+                req.logger.warning("market.returns skip_cache empty symbol=\(symbol)")
+                return response
+            }
             await redisSetValue(
                 cacheKey,
                 value: response,

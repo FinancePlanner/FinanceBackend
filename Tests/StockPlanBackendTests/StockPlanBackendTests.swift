@@ -1164,6 +1164,60 @@ struct StockPlanBackendTests {
         }
     }
 
+    @Test("Empty period-return windows are not cached")
+    func periodReturnsEmptyWindowsAreNotCached() async throws {
+        try await withApp { app in
+            guard app.redis.configuration != nil else { return }
+            let fmpState = TestFMPProviderState()
+            app.marketDataService = makeTestMarketService(
+                state: TestMarketProviderState(),
+                fmpProvider: TestFMPMarketDataProvider(state: fmpState),
+                fmpAccessTier: .premium
+            )
+            let (token, _) = try await registerTestUser(app: app, identifier: "returnsemptycache")
+
+            for _ in 0 ..< 2 {
+                try await app.testing().test(.GET, "v1/market/returns/AMD", beforeRequest: { req in
+                    req.headers.bearerAuthorization = .init(token: token)
+                }, afterResponse: { res async throws in
+                    #expect(res.status == .ok)
+                    let body = try res.content.decode(StockPeriodReturnsResponse.self)
+                    #expect(body.hasUsableWindows == false)
+                })
+            }
+
+            #expect(await fmpState.priceChangeCalls() == 2)
+        }
+    }
+
+    @Test("Populated period returns are cached")
+    func periodReturnsPopulatedWindowsAreCached() async throws {
+        try await withApp { app in
+            guard app.redis.configuration != nil else { return }
+            let fmpState = TestFMPProviderState()
+            await fmpState.setPriceChange(
+                FMPStockPriceChange(symbol: "AAPL", threeMonth: 12.5, sixMonth: 15.3, yearToDate: 18.2),
+                for: "AAPL"
+            )
+            app.marketDataService = makeTestMarketService(
+                state: TestMarketProviderState(),
+                fmpProvider: TestFMPMarketDataProvider(state: fmpState),
+                fmpAccessTier: .premium
+            )
+            let (token, _) = try await registerTestUser(app: app, identifier: "returnspopcache")
+
+            for _ in 0 ..< 2 {
+                try await app.testing().test(.GET, "v1/market/returns/AAPL", beforeRequest: { req in
+                    req.headers.bearerAuthorization = .init(token: token)
+                }, afterResponse: { res async throws in
+                    #expect(res.status == .ok)
+                })
+            }
+
+            #expect(await fmpState.priceChangeCalls() == 1)
+        }
+    }
+
     @Test("Pressure temperature formula behaves at the extremes")
     func pressureTemperatureFormula() {
         #expect(pressureTemperature(relativeVolume: 0, changePct: 0, insider: nil) == 50)

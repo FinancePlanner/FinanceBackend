@@ -58,4 +58,22 @@ struct PeriodReturnsMappingTests {
         #expect(mapped.sixMonth == 2)
         #expect(mapped.yearToDate == 3)
     }
+
+    @Test("hasUsableWindows is false when every window is nil")
+    func hasUsableWindowsFalseWhenEmpty() {
+        #expect(emptyPeriodReturns(symbol: "AMD").hasUsableWindows == false)
+    }
+
+    @Test("hasUsableWindows is true when any window is present")
+    func hasUsableWindowsTrueWhenAnyWindowPresent() {
+        #expect(
+            StockPeriodReturnsResponse(
+                symbol: "AMD",
+                threeMonth: nil,
+                sixMonth: 1.2,
+                yearToDate: nil,
+                asOf: nil
+            ).hasUsableWindows
+        )
+    }
 }
