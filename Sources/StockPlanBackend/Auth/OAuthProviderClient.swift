@@ -4,6 +4,10 @@ import JWT
 import JWTKit
 import Vapor
 
+/// Shared across token exchanges; provider payloads are plain snake_case JSON
+/// and must not go through the app-wide key strategy.
+private let oauthProviderJSONDecoder = JSONDecoder()
+
 struct OAuthAuthorizationContext {
     let state: String
     let nonce: String
@@ -796,7 +800,7 @@ private func oauthDecodeProviderJSON<T: Decodable>(
         throw Abort(.badGateway, reason: "\(provider) token exchange returned empty body")
     }
     do {
-        return try JSONDecoder().decode(type, from: data)
+        return try oauthProviderJSONDecoder.decode(type, from: data)
     } catch {
         throw Abort(
             .badGateway,

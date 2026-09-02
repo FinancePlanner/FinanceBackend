@@ -16,6 +16,10 @@ enum UserPIIEncryptionError: Error {
 }
 
 struct AESGCMUserPIIEncryptionService: UserPIIEncrypting, @unchecked Sendable {
+    // Runs once per encrypted PII field on every user read; the coders were
+    // built per call before 2026-09-02.
+    private static let jsonDecoder = JSONDecoder()
+    private static let jsonEncoder = JSONEncoder()
     private struct EnvelopeV1: Codable {
         let version: Int
         let keyID: String
@@ -45,7 +49,7 @@ struct AESGCMUserPIIEncryptionService: UserPIIEncrypting, @unchecked Sendable {
             keyID: activeKeyID,
             combinedCiphertext: combined.base64EncodedString()
         )
-        return try JSONEncoder().encode(envelope)
+        return try Self.jsonEncoder.encode(envelope)
     }
 
     /// Encrypts with additional authenticated data so ciphertexts are bound to a
@@ -61,16 +65,16 @@ struct AESGCMUserPIIEncryptionService: UserPIIEncrypting, @unchecked Sendable {
             keyID: activeKeyID,
             combinedCiphertext: combined.base64EncodedString()
         )
-        return try JSONEncoder().encode(envelope)
+        return try Self.jsonEncoder.encode(envelope)
     }
 
     func decryptString(_ payload: Data, authenticating context: String) throws -> String {
-        guard let envelope = try? JSONDecoder().decode(EnvelopeV1.self, from: payload),
+        guard let envelope = try? Self.jsonDecoder.decode(EnvelopeV1.self, from: payload),
               envelope.version == 2,
               let key = keysByID[envelope.keyID],
               let combined = Data(base64Encoded: envelope.combinedCiphertext)
         else {
-            if let envelope = try? JSONDecoder().decode(EnvelopeV1.self, from: payload),
+            if let envelope = try? Self.jsonDecoder.decode(EnvelopeV1.self, from: payload),
                keysByID[envelope.keyID] == nil
             {
                 throw UserPIIEncryptionError.unknownKeyIdentifier(envelope.keyID)
@@ -99,12 +103,12 @@ struct AESGCMUserPIIEncryptionService: UserPIIEncrypting, @unchecked Sendable {
     }
 
     func decryptString(_ payload: Data) throws -> String {
-        guard let envelope = try? JSONDecoder().decode(EnvelopeV1.self, from: payload),
+        guard let envelope = try? Self.jsonDecoder.decode(EnvelopeV1.self, from: payload),
               envelope.version == 1,
               let key = keysByID[envelope.keyID],
               let combined = Data(base64Encoded: envelope.combinedCiphertext)
         else {
-            if let envelope = try? JSONDecoder().decode(EnvelopeV1.self, from: payload),
+            if let envelope = try? Self.jsonDecoder.decode(EnvelopeV1.self, from: payload),
                keysByID[envelope.keyID] == nil
             {
                 throw UserPIIEncryptionError.unknownKeyIdentifier(envelope.keyID)

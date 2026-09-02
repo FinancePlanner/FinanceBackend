@@ -1,6 +1,6 @@
 import NIOCore
 import Redis
-import RediStack
+@preconcurrency import RediStack // RESPValue is not Sendable; it never leaves incrementWithWindow.
 import Vapor
 
 struct RateLimitMiddleware: AsyncMiddleware {

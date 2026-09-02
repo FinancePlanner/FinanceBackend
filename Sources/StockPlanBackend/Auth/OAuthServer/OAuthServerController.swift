@@ -8,6 +8,7 @@ import Vapor
 /// web consent posts approve/deny (first-party session) → returns redirect_url
 /// with code → client → POST /token (code + PKCE) → access/refresh tokens.
 struct OAuthServerController: RouteCollection {
+    private static let jsonDecoder = JSONDecoder()
     static let maxRedirectURIs = 5
 
     func boot(routes: any RoutesBuilder) throws {
@@ -258,7 +259,7 @@ struct OAuthServerController: RouteCollection {
         guard let buffer = req.body.data else {
             throw Abort(.badRequest, reason: "invalid_request: missing body")
         }
-        return try JSONDecoder().decode(T.self, from: Data(buffer: buffer))
+        return try Self.jsonDecoder.decode(T.self, from: Data(buffer: buffer))
     }
 
     private func loadPendingFlow(_ req: Request) async throws -> OAuthAuthorizationFlow {

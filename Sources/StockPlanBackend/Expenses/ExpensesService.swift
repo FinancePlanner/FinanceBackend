@@ -845,17 +845,28 @@ final class DefaultExpensesService: ExpensesService {
 
     func getMonthlyReports(userId: UUID, from: Date?, to: Date?, on db: any Database) async throws -> [BudgetMonthSummaryResponse] {
         let itemsQuery = BudgetPlanItem.query(on: db).filter(\.$user.$id == userId)
-        let allSnapshots = try await BudgetSnapshot.query(on: db)
-            .filter(\.$user.$id == userId)
-            .all()
-        let items = try await itemsQuery.all()
-        let allExpenses = try await Expense.query(on: db)
-            .filter(\.$user.$id == userId)
-            .all()
-
         // PostgreSQL DATE columns do not compare reliably with Swift Date
-        // parameters across every configured timezone. Filter decoded values
-        // here so report boundaries stay calendar-date based.
+        // parameters across every configured timezone, so the exact boundary
+        // is still applied to decoded values below. The SQL predicate is
+        // widened by a day on each side: it cannot exclude a row the exact
+        // filter would keep, and it turns "load every row this user ever
+        // wrote" into a bounded range scan on (user_id, occurred_on).
+        let widenedFrom = from.map { $0.addingTimeInterval(-86400) }
+        let widenedTo = to.map { $0.addingTimeInterval(86400) }
+        var snapshotsQuery = BudgetSnapshot.query(on: db).filter(\.$user.$id == userId)
+        var expensesQuery = Expense.query(on: db).filter(\.$user.$id == userId)
+        if let widenedFrom {
+            snapshotsQuery = snapshotsQuery.filter(\.$monthStart >= widenedFrom)
+            expensesQuery = expensesQuery.filter(\.$occurredOn >= widenedFrom)
+        }
+        if let widenedTo {
+            snapshotsQuery = snapshotsQuery.filter(\.$monthStart <= widenedTo)
+            expensesQuery = expensesQuery.filter(\.$occurredOn <= widenedTo)
+        }
+        let allSnapshots = try await snapshotsQuery.all()
+        let items = try await itemsQuery.all()
+        let allExpenses = try await expensesQuery.all()
+
         let snapshots = allSnapshots.filter { snapshot in
             (from.map { snapshot.monthStart >= $0 } ?? true)
                 && (to.map { snapshot.monthStart <= $0 } ?? true)

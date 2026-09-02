@@ -29,6 +29,10 @@ extension AIResponseCache {
 
 /// The production cache. No-ops entirely when Redis is not configured.
 struct RedisJSONCache: AIResponseCache {
+    // One coder per type, not per call: JSONDecoder/JSONEncoder rebuild their
+    // strategy tables on init and are safe to share across tasks.
+    private static let jsonDecoder = JSONDecoder()
+    private static let jsonEncoder = JSONEncoder()
     /// Prefixes the log lines so a degraded cache is attributable to a feature
     /// rather than to "something, somewhere, uses Redis".
     let label: String
@@ -39,7 +43,7 @@ struct RedisJSONCache: AIResponseCache {
             guard let data = try await req.redis.get(RedisKey(key), as: Data.self).get() else {
                 return nil
             }
-            return try JSONDecoder().decode(T.self, from: data)
+            return try Self.jsonDecoder.decode(T.self, from: data)
         } catch {
             req.logger.warning("\(label) cache read failed key=\(key) error=\(error)")
             return nil
@@ -49,7 +53,7 @@ struct RedisJSONCache: AIResponseCache {
     func set(_ key: String, value: some Encodable, ttlSeconds: Int, on req: Request) async {
         guard req.application.redis.configuration != nil else { return }
         do {
-            let data = try JSONEncoder().encode(value)
+            let data = try Self.jsonEncoder.encode(value)
             try await req.redis.setex(
                 RedisKey(key), to: data, expirationInSeconds: max(1, ttlSeconds)
             ).get()
@@ -65,6 +69,8 @@ struct RedisJSONCache: AIResponseCache {
 /// clock would only test the fake. Expiry is Redis's job and is not reimplemented
 /// here.
 final class InMemoryAIResponseCache: AIResponseCache, @unchecked Sendable {
+    private static let jsonDecoder = JSONDecoder()
+    private static let jsonEncoder = JSONEncoder()
     private let lock = NIOLock()
     private var storage: [String: Data] = [:]
 
@@ -72,11 +78,11 @@ final class InMemoryAIResponseCache: AIResponseCache, @unchecked Sendable {
 
     func get<T: Decodable>(_ key: String, as _: T.Type, on _: Request) async -> T? {
         guard let data = lock.withLock({ storage[key] }) else { return nil }
-        return try? JSONDecoder().decode(T.self, from: data)
+        return try? Self.jsonDecoder.decode(T.self, from: data)
     }
 
     func set(_ key: String, value: some Encodable, ttlSeconds _: Int, on _: Request) async {
-        guard let data = try? JSONEncoder().encode(value) else { return }
+        guard let data = try? Self.jsonEncoder.encode(value) else { return }
         lock.withLock { storage[key] = data }
     }
 
