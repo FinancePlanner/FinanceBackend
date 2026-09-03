@@ -26,6 +26,21 @@ struct FilingPackGoldenTests {
         FileManager.default.fileExists(atPath: statementFixture.path)
     }
 
+    static var hasGolden: Bool {
+        FileManager.default.fileExists(atPath: goldenFixture.path)
+    }
+
+    /// Recording is a deliberate local act (`TAX_GOLDEN_RECORD=1`); CI only
+    /// ever asserts against a committed golden, so an incomplete statement
+    /// cannot turn main red while the earlier years are still being gathered.
+    static var isRecording: Bool {
+        ProcessInfo.processInfo.environment["TAX_GOLDEN_RECORD"] == "1"
+    }
+
+    static var goldenEnabled: Bool {
+        hasStatementFixture && (hasGolden || isRecording)
+    }
+
     /// The recorded ECB series, parsed by the same code the live provider uses.
     struct RecordedECB: FXDailyRateProviding {
         let rows: [FXDailyRate]
@@ -143,7 +158,7 @@ struct FilingPackGoldenTests {
 
     @Test(
         "Anonymised 2025 statement renders the golden Anexo J CSV",
-        .enabled(if: FilingPackGoldenTests.hasStatementFixture, "Drop the anonymised 2025 IBKR Activity Statement at Tests/StockPlanBackendTests/Tax/Fixtures/ibkr-2025-anonymized.csv")
+        .enabled(if: FilingPackGoldenTests.goldenEnabled, "Needs Fixtures/ibkr-2025-anonymized.csv plus either a committed anexo-j-2025.golden.csv or TAX_GOLDEN_RECORD=1 to write one")
     )
     func goldenStatement() async throws {
         try await withApp { app in
