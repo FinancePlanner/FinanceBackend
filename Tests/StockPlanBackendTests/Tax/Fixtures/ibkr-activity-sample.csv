@@ -1,0 +1,20 @@
+Statement,Header,Field Name,Field Value
+Statement,Data,BrokerName,Interactive Brokers
+Statement,Data,Title,Activity Statement
+Statement,Data,Period,"January 1, 2025 - December 31, 2025"
+Trades,Header,DataDiscriminator,Asset Category,Currency,Symbol,Date/Time,Quantity,T. Price,C. Price,Proceeds,Comm/Fee,Basis,Realized P/L,MTM P/L,Code
+Trades,Data,Order,Stocks,USD,AAPL,"2025-03-14, 09:31:02",10,150.00,151.00,-1500.00,-1.00,1501.00,0,10.00,O
+Trades,Data,ClosedLot,Stocks,USD,AAPL,"2025-03-14, 09:31:02",10,150.00,,,,1501.00,299.00,,
+Trades,Data,Order,Stocks,USD,AAPL,"2025-09-10, 15:45:10",-10,180.00,179.50,1800.00,-1.00,-1501.00,298.00,5.00,C
+Trades,Data,SubTotal,,USD,AAPL,,0,,,300.00,-2.00,0,298.00,15.00,
+Trades,Data,Total,,USD,,,,,,300.00,-2.00,0,298.00,15.00,
+Trades,Header,DataDiscriminator,Asset Category,Currency,Symbol,Date/Time,Quantity,T. Price,C. Price,Proceeds,Comm/Fee,Basis,Realized P/L,MTM P/L,Code
+Trades,Data,Order,Forex,EUR,EUR.USD,"2025-03-13, 10:00:00","1,000",1.0880,1.0880,-1088.00,-2.00,1088.00,0,0,
+Dividends,Header,Currency,Date,Description,Amount
+Dividends,Data,USD,2025-05-15,AAPL(US0378331005) Cash Dividend USD 0.25 per Share (Ordinary Dividend),2.50
+Dividends,Data,Total,,,2.50
+Withholding Tax,Header,Currency,Date,Description,Amount,Code
+Withholding Tax,Data,USD,2025-05-15,AAPL(US0378331005) Cash Dividend USD 0.25 per Share - US Tax,-0.38,
+Withholding Tax,Data,Total,,,-0.38,
+Financial Instrument Information,Header,Asset Category,Symbol,Description,Conid,Security ID,Listing Exch,Multiplier,Type,Code
+Financial Instrument Information,Data,Stocks,AAPL,APPLE INC,265598,US0378331005,NASDAQ,1,COMMON,
