@@ -221,9 +221,12 @@ struct ExpensesTests {
             }, afterResponse: { res async throws in
                 #expect(res.status == .ok)
                 let overview = try res.content.decode(ReportsOverviewResponse.self)
+                // Listing snapshots above rolled the plan into the current month,
+                // so "latest" is now this month with nothing spent yet; May still
+                // shows up in the cash flow with the expense that created it.
                 #expect(overview.latestMonthSummary != nil)
-                #expect(overview.latestMonthSummary?.monthStart == "2026-05-01")
-                #expect(overview.latestMonthSummary?.actual == 700)
+                #expect(overview.latestMonthSummary?.monthStart == utcDayString(MoneyFormat.currentMonthStart()))
+                #expect(overview.latestMonthSummary?.actual == 0)
                 #expect(overview.cashFlow.contains { $0.monthStart == "2026-05-01" && $0.expenses == 700 })
                 #expect(!overview.latestPillarSummaries.isEmpty)
             })
@@ -1200,6 +1203,210 @@ struct ExpensesTests {
             }, afterResponse: { response async throws in
                 #expect(response.status == .badRequest)
             })
+        }
+    }
+
+    // MARK: - Month rollover
+
+    private func registerTestUserWithId(app: Application) async throws -> (token: String, userId: UUID) {
+        let identifier = UUID().uuidString.prefix(8).lowercased()
+        let register = StockPlanBackend.AuthRegisterRequest(
+            username: "roll_user_\(identifier)",
+            password: "Password123!",
+            confirmPassword: "Password123!",
+            email: "roll_\(identifier)@example.com",
+            dateOfBirth: Date(timeIntervalSince1970: 946_684_800)
+        )
+        var response: AuthResponse?
+        try await app.testing().test(.POST, "v1/auth/register", beforeRequest: { req in
+            try req.content.encode(register)
+        }, afterResponse: { res async throws in
+            #expect(res.status == .ok)
+            response = try res.content.decode(AuthResponse.self)
+        })
+        guard let response else {
+            throw Abort(.internalServerError, reason: "Auth register did not return a response")
+        }
+        return (response.token, response.userId)
+    }
+
+    private var utcCalendar: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        return calendar
+    }
+
+    private func utcDayString(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        return formatter.string(from: date)
+    }
+
+    /// Mid-month, midday UTC so DATE-vs-timestamptz session casts never move it across a boundary.
+    private func midMonth(_ monthStart: Date) -> Date {
+        utcCalendar.date(byAdding: DateComponents(day: 14, hour: 12), to: monthStart)!
+    }
+
+    private func createSnapshot(app: Application, token: String, monthStart: Date, netSalary: Double, currencyCode: String = "USD") async throws -> BudgetSnapshotResponse {
+        var created: BudgetSnapshotResponse?
+        try await app.testing().test(.POST, "v1/budget/snapshots", beforeRequest: { req in
+            req.headers.bearerAuthorization = .init(token: token)
+            try req.content.encode(
+                BudgetSnapshotRequest(
+                    monthStart: utcDayString(monthStart),
+                    netSalary: netSalary,
+                    targetShares: [
+                        BudgetPillar.fundamentals.rawValue: 0.55,
+                        BudgetPillar.futureYou.rawValue: 0.25,
+                        BudgetPillar.fun.rawValue: 0.2,
+                    ],
+                    currencyCode: currencyCode,
+                    categoryDriftThreshold: 22,
+                    totalDriftThreshold: 7,
+                    alertsEnabled: false,
+                    alertOnUnbudgeted: false
+                )
+            )
+        }, afterResponse: { res async throws in
+            #expect(res.status == .created)
+            created = try res.content.decode(BudgetSnapshotResponse.self)
+        })
+        return try #require(created)
+    }
+
+    @Test("Month rollover clones the latest past snapshot with every plan item, skipping gap months")
+    func rolloverClonesLatestPastSnapshotWithAllItems() async throws {
+        try await withExpensesApp { app in
+            let (token, userId) = try await registerTestUserWithId(app: app)
+            let currentMonth = MoneyFormat.currentMonthStart()
+            let twoMonthsAgo = utcCalendar.date(byAdding: .month, value: -2, to: currentMonth)!
+            let lastMonth = utcCalendar.date(byAdding: .month, value: -1, to: currentMonth)!
+
+            let template = try await createSnapshot(app: app, token: token, monthStart: twoMonthsAgo, netSalary: 4200, currencyCode: "EUR")
+
+            let subscriptions = ExpenseCategory(userID: userId, name: "Subscriptions", pillar: .fun)
+            try await subscriptions.create(on: app.db)
+            let subscriptionsCategoryId = try subscriptions.requireID().uuidString
+
+            let itemRequests = [
+                BudgetPlanItemRequest(
+                    snapshotId: template.id,
+                    title: "Streaming",
+                    plannedAmount: 30,
+                    pillar: .fun,
+                    categoryId: subscriptionsCategoryId
+                ),
+                BudgetPlanItemRequest(
+                    snapshotId: template.id,
+                    title: "Index fund",
+                    plannedAmount: 0,
+                    pillar: .futureYou,
+                    splitMode: .shared,
+                    userSharePercent: 60,
+                    targetType: .percentageIncome,
+                    incomePercentage: 10,
+                    thresholdOverride: 3,
+                    allocationKind: .investmentContribution,
+                    reallocationEligible: true
+                ),
+            ]
+            for itemRequest in itemRequests {
+                try await app.testing().test(.POST, "v1/budget/items", beforeRequest: { req in
+                    req.headers.bearerAuthorization = .init(token: token)
+                    try req.content.encode(itemRequest)
+                }, afterResponse: { res async throws in
+                    #expect(res.status == .created)
+                })
+            }
+
+            let service = DefaultExpensesService(req: Request(application: app, on: app.eventLoopGroup.next()))
+            let created = try await service.ensureCurrentMonthRollover(userId: userId, now: midMonth(currentMonth), on: app.db)
+            let createdSnapshot = try #require(created)
+            #expect(utcDayString(createdSnapshot.monthStart) == utcDayString(currentMonth))
+            #expect(createdSnapshot.netSalary == 4200)
+            #expect(createdSnapshot.targetShares[BudgetPillar.fundamentals.rawValue] == 0.55)
+            #expect(createdSnapshot.currencyCode == "EUR")
+            #expect(createdSnapshot.categoryDriftThreshold == 22)
+            #expect(createdSnapshot.totalDriftThreshold == 7)
+            #expect(createdSnapshot.alertsEnabled == false)
+            #expect(createdSnapshot.alertOnUnbudgeted == false)
+
+            let allSnapshots = try await BudgetSnapshot.query(on: app.db).filter(\.$user.$id == userId).all()
+            #expect(allSnapshots.count == 2)
+            #expect(!allSnapshots.contains { utcDayString($0.monthStart) == utcDayString(lastMonth) })
+
+            let clonedItems = try await BudgetPlanItem.query(on: app.db)
+                .filter(\.$snapshot.$id == createdSnapshot.requireID())
+                .sort(\.$title)
+                .all()
+            #expect(clonedItems.count == 2)
+
+            let fund = try #require(clonedItems.first { $0.title == "Index fund" })
+            #expect(fund.pillar == .futureYou)
+            #expect(fund.splitMode == .shared)
+            #expect(fund.userSharePercent == 60)
+            #expect(fund.targetType == .percentageIncome)
+            #expect(fund.incomePercentage == 10)
+            #expect(fund.thresholdOverride == 3)
+            #expect(fund.allocationKind == .investmentContribution)
+            #expect(fund.reallocationEligible == true)
+            #expect(fund.$category.id == nil)
+
+            let streaming = try #require(clonedItems.first { $0.title == "Streaming" })
+            #expect(streaming.plannedAmount == 30)
+            #expect(streaming.$category.id?.uuidString.lowercased() == subscriptionsCategoryId.lowercased())
+
+            // Second call is a no-op.
+            let again = try await service.ensureCurrentMonthRollover(userId: userId, now: midMonth(currentMonth), on: app.db)
+            #expect(again == nil)
+            let snapshotCount = try await BudgetSnapshot.query(on: app.db).filter(\.$user.$id == userId).count()
+            #expect(snapshotCount == 2)
+            let itemCount = try await BudgetPlanItem.query(on: app.db).filter(\.$user.$id == userId).count()
+            #expect(itemCount == 4)
+        }
+    }
+
+    @Test("Month rollover is a no-op without a past snapshot, including when only a future one exists")
+    func rolloverIsNoOpWithoutPastSnapshots() async throws {
+        try await withExpensesApp { app in
+            let (token, userId) = try await registerTestUserWithId(app: app)
+            let currentMonth = MoneyFormat.currentMonthStart()
+            let service = DefaultExpensesService(req: Request(application: app, on: app.eventLoopGroup.next()))
+
+            let fresh = try await service.ensureCurrentMonthRollover(userId: userId, now: midMonth(currentMonth), on: app.db)
+            #expect(fresh == nil)
+            #expect(try await BudgetSnapshot.query(on: app.db).filter(\.$user.$id == userId).count() == 0)
+
+            let nextQuarter = utcCalendar.date(byAdding: .month, value: 3, to: currentMonth)!
+            _ = try await createSnapshot(app: app, token: token, monthStart: nextQuarter, netSalary: 1000)
+
+            let futureOnly = try await service.ensureCurrentMonthRollover(userId: userId, now: midMonth(currentMonth), on: app.db)
+            #expect(futureOnly == nil)
+            #expect(try await BudgetSnapshot.query(on: app.db).filter(\.$user.$id == userId).count() == 1)
+        }
+    }
+
+    @Test("Listing snapshots rolls the latest past month into the current month")
+    func listSnapshotsCreatesCurrentMonth() async throws {
+        try await withExpensesApp { app in
+            let (token, _) = try await registerTestUserWithId(app: app)
+            let currentMonth = MoneyFormat.currentMonthStart()
+            let twoMonthsAgo = utcCalendar.date(byAdding: .month, value: -2, to: currentMonth)!
+            _ = try await createSnapshot(app: app, token: token, monthStart: twoMonthsAgo, netSalary: 3100)
+
+            for _ in 0 ..< 2 {
+                try await app.testing().test(.GET, "v1/budget/snapshots", beforeRequest: { req in
+                    req.headers.bearerAuthorization = .init(token: token)
+                }, afterResponse: { res async throws in
+                    #expect(res.status == .ok)
+                    let snapshots = try res.content.decode([BudgetSnapshotResponse].self)
+                    #expect(snapshots.count == 2)
+                    let current = snapshots.first { $0.monthStart == utcDayString(currentMonth) }
+                    #expect(current?.netSalary == 3100)
+                })
+            }
         }
     }
 }

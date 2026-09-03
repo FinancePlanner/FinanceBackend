@@ -1,5 +1,6 @@
 import Fluent
 import Foundation
+import SQLKit
 import StockPlanShared
 import Vapor
 
@@ -37,6 +38,12 @@ protocol ExpensesService: Sendable {
     /// Creates the month's budget snapshot only if none exists (non-destructive).
     /// Exposed so bulk importers can pre-create snapshots once per month.
     func ensureSnapshotExists(userId: UUID, monthStart: Date, on db: any Database) async throws
+    /// Rolls the budget into the current UTC month: clones the most recent *past*
+    /// snapshot (salary, targets, settings, every plan item) when the current month
+    /// has none. No-op when it exists or there is nothing to roll forward.
+    /// Returns the created snapshot, nil when nothing was created.
+    @discardableResult
+    func ensureCurrentMonthRollover(userId: UUID, now: Date, on db: any Database) async throws -> BudgetSnapshot?
     func updateExpense(userId: UUID, expenseId: UUID, request: ExpenseRequest, on db: any Database) async throws -> ExpenseResponse
     func deleteExpense(userId: UUID, expenseId: UUID, on db: any Database) async throws
 
@@ -1348,6 +1355,94 @@ extension DefaultExpensesService {
                 newItem.$category.id = item.$category.id
                 try await newItem.create(on: db)
             }
+        }
+    }
+
+    func ensureCurrentMonthRollover(
+        userId: UUID,
+        now: Date,
+        on db: any Database
+    ) async throws -> BudgetSnapshot? {
+        let currentMonth = MoneyFormat.currentMonthStart(now)
+        let calendar: Calendar = {
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+            return calendar
+        }()
+        @Sendable func isCurrentMonth(_ snapshot: BudgetSnapshot) -> Bool {
+            calendar.isDate(snapshot.monthStart, equalTo: currentMonth, toGranularity: .month)
+        }
+        /// month_start is a DATE column; comparing it in SQL against a bound
+        /// timestamp casts at the session time zone, so filter in Swift like
+        /// findSnapshot does. A user has one row per month, so this stays small.
+        @Sendable func latestPastSnapshot(in snapshots: [BudgetSnapshot]) -> BudgetSnapshot? {
+            snapshots
+                .filter { $0.monthStart < currentMonth }
+                .max { $0.monthStart < $1.monthStart }
+        }
+
+        // Fast path without a transaction: on almost every list call the month
+        // already exists or the user has never planned a month.
+        let existing = try await BudgetSnapshot.query(on: db).filter(\.$user.$id == userId).all()
+        if existing.contains(where: isCurrentMonth) {
+            return nil
+        }
+        guard latestPastSnapshot(in: existing) != nil else { return nil }
+
+        return try await db.transaction { tx in
+            // Two devices foregrounding at once must not both clone the plan:
+            // budget_plan_items has no unique key, so serialise per user.
+            if let sql = tx as? any SQLDatabase {
+                let lockKey = "budget_rollover:\(userId.uuidString)"
+                try await sql.raw("SELECT pg_advisory_xact_lock(hashtext(\(bind: lockKey)))").run()
+            }
+
+            let snapshots = try await BudgetSnapshot.query(on: tx).filter(\.$user.$id == userId).all()
+            if snapshots.contains(where: isCurrentMonth) {
+                return nil
+            }
+            guard let template = latestPastSnapshot(in: snapshots) else { return nil }
+
+            // lastBudgetAlertThreshold and revision are per-month state; start fresh.
+            let snapshot = BudgetSnapshot(
+                userID: userId,
+                monthStart: currentMonth,
+                netSalary: template.netSalary,
+                targetShares: template.targetShares,
+                currencyCode: template.currencyCode,
+                categoryDriftThreshold: template.categoryDriftThreshold,
+                totalDriftThreshold: template.totalDriftThreshold,
+                alertsEnabled: template.alertsEnabled,
+                alertOnUnbudgeted: template.alertOnUnbudgeted
+            )
+            try await snapshot.create(on: tx)
+            let snapshotId = try snapshot.requireID()
+
+            let templateItems = try await BudgetPlanItem.query(on: tx)
+                .filter(\.$snapshot.$id == template.requireID())
+                .filter(\.$user.$id == userId)
+                .all()
+            for item in templateItems {
+                let clone = BudgetPlanItem(
+                    snapshotID: snapshotId,
+                    userID: userId,
+                    title: item.title,
+                    plannedAmount: item.plannedAmount,
+                    pillar: item.pillar,
+                    splitMode: item.splitMode,
+                    userSharePercent: item.userSharePercent,
+                    targetType: item.targetType,
+                    incomePercentage: item.incomePercentage,
+                    thresholdOverride: item.thresholdOverride,
+                    allocationKind: item.allocationKind,
+                    reallocationEligible: item.reallocationEligible,
+                    destinationFinancialGoalId: item.destinationFinancialGoalId,
+                    destinationPortfolioListId: item.destinationPortfolioListId
+                )
+                clone.$category.id = item.$category.id
+                try await clone.create(on: tx)
+            }
+            return snapshot
         }
     }
 

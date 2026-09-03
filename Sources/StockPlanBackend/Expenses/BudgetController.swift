@@ -195,6 +195,14 @@ struct BudgetController: RouteCollection {
         let year = req.query[Int.self, at: "year"]
         let month = req.query[Int.self, at: "month"]
 
+        // Listing is how both clients open the planner, so this is where a new
+        // calendar month gets its plan. Idempotent; a failure must not break reads.
+        do {
+            try await req.expensesService.ensureCurrentMonthRollover(userId: session.userId, now: Date(), on: req.db)
+        } catch {
+            req.logger.warning("budget month rollover failed: \(error)")
+        }
+
         return try await req.expensesService.getSnapshots(
             userId: session.userId,
             year: year,
