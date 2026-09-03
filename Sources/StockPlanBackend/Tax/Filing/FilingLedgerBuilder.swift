@@ -111,7 +111,7 @@ struct FilingLedgerBuilder: Sendable {
             ))
         }
 
-        return FilingLedger(
+        var ledger = FilingLedger(
             taxYear: taxYear,
             reportingCurrency: reportingCurrency.uppercased(),
             jurisdiction: jurisdiction,
@@ -119,6 +119,72 @@ struct FilingLedgerBuilder: Sendable {
             dividends: dividendRows.sorted { $0.payDate < $1.payDate },
             unsupported: unsupported
         )
+        if jurisdiction == .germany {
+            ledger.germany = try await germanySupplement(
+                userId: userId,
+                taxYear: taxYear,
+                yearEnd: yearEnd,
+                reportingCurrency: reportingCurrency,
+                instruments: instruments,
+                on: db
+            )
+        }
+        return ledger
+    }
+
+    /// Fund classifications, the year's Vorabpauschalen, and last year's loss
+    /// carry-forwards: everything Anlage KAP-INV and the loss pots need that
+    /// is not a trade or a dividend.
+    private func germanySupplement(
+        userId: UUID,
+        taxYear: Int,
+        yearEnd: Date,
+        reportingCurrency: String,
+        instruments: [Instrument],
+        on db: any Database
+    ) async throws -> GermanyFilingSupplement {
+        var classifications: [String: TaxFundClassification] = [:]
+        for instrument in instruments where Self.isFund(instrument.instrumentType) {
+            classifications[instrument.symbol] = instrument.fundClassification.flatMap(TaxFundClassification.init(rawValue:)) ?? .unknown
+        }
+
+        let holdings = try await GermanyFundAnnualHolding.query(on: db)
+            .filter(\.$userId == userId)
+            .filter(\.$calculationYear == taxYear)
+            .all()
+        let holdingInstrumentIds = Array(Set(holdings.map(\.instrumentId)))
+        let holdingInstruments = holdingInstrumentIds.isEmpty ? [] : try await Instrument.query(on: db).filter(\.$id ~~ holdingInstrumentIds).all()
+        let symbolById = Dictionary(uniqueKeysWithValues: holdingInstruments.compactMap { i in i.id.map { ($0, i.symbol) } })
+        var advances: [GermanyFilingAdvanceLumpSum] = []
+        for holding in holdings {
+            guard let classification = TaxFundClassification(rawValue: holding.fundClassification), classification != .unknown else { continue }
+            // Vorabpauschale accrues on the first business day of the following
+            // year; the resolver falls back to the last fixing before it.
+            let gross = try await fx.convert(Decimal(holding.grossAdvanceLumpSum), from: holding.currency, to: reportingCurrency, on: yearEnd)
+            advances.append(GermanyFilingAdvanceLumpSum(symbol: symbolById[holding.instrumentId] ?? "?", classification: classification, gross: gross.amount))
+        }
+
+        let priorStock = try await GermanyStockLossYear.query(on: db)
+            .filter(\.$userId == userId)
+            .filter(\.$taxYear == taxYear - 1)
+            .first()
+            .map { Decimal($0.endingLossCarryforward) }
+        let priorGeneral = try await GermanyGeneralLossYear.query(on: db)
+            .filter(\.$userId == userId)
+            .filter(\.$taxYear == taxYear - 1)
+            .first()
+            .map { Decimal($0.endingLossCarryforward) }
+
+        return GermanyFilingSupplement(
+            fundClassifications: classifications,
+            advanceLumpSums: advances.sorted { $0.symbol < $1.symbol },
+            priorStockLossCarryforward: priorStock,
+            priorGeneralLossCarryforward: priorGeneral
+        )
+    }
+
+    static func isFund(_ instrumentType: String?) -> Bool {
+        ["etf", "fund", "mutual_fund", "mutualfund", "investment_fund"].contains((instrumentType ?? "").lowercased())
     }
 
     /// The ISIN prefix is the issuer's country, which is what "país da fonte"

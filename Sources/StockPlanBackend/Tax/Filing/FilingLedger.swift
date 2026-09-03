@@ -38,6 +38,26 @@ struct FilingUnsupportedRow: Sendable, Equatable, Codable {
     let reference: String
 }
 
+/// One fund's Vorabpauschale for the tax year, already in the reporting
+/// currency; feeds Anlage KAP-INV Zeile 9–13.
+struct GermanyFilingAdvanceLumpSum: Sendable, Equatable, Codable {
+    let symbol: String
+    let classification: TaxFundClassification
+    let gross: Decimal
+}
+
+/// What the German pack needs beyond trades and dividends. Filled by the
+/// builder only for `.germany`; the mapper stays a pure function of the ledger.
+struct GermanyFilingSupplement: Sendable, Equatable, Codable {
+    /// InvStG classification per symbol for every fund-type instrument in the
+    /// ledger (`.unknown` when the user has not classified it yet).
+    let fundClassifications: [String: TaxFundClassification]
+    let advanceLumpSums: [GermanyFilingAdvanceLumpSum]
+    /// Ending carry-forwards recorded for the previous tax year, if any.
+    let priorStockLossCarryforward: Decimal?
+    let priorGeneralLossCarryforward: Decimal?
+}
+
 struct FilingLedger: Sendable, Equatable, Codable {
     let taxYear: Int
     let reportingCurrency: String
@@ -45,6 +65,7 @@ struct FilingLedger: Sendable, Equatable, Codable {
     let disposals: [FilingDisposal]
     let dividends: [FilingDividend]
     let unsupported: [FilingUnsupportedRow]
+    var germany: GermanyFilingSupplement? = nil
 
     var totalGain: Decimal {
         disposals.map(\.gain).reduce(0, +)

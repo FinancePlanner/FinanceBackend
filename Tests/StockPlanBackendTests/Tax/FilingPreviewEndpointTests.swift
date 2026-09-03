@@ -52,10 +52,10 @@ struct FilingPreviewEndpointTests {
         return (token, session.userId)
     }
 
-    private func completePortugalProfile(app: Application, userId: UUID, taxYear: Int) async throws {
+    private func completePortugalProfile(app: Application, userId: UUID, taxYear: Int, jurisdiction: TaxJurisdiction = .portugal) async throws {
         let profile = TaxProfile()
         profile.userId = userId
-        profile.jurisdiction = TaxJurisdiction.portugal.rawValue
+        profile.jurisdiction = jurisdiction.rawValue
         profile.taxYear = taxYear
         profile.filingStatus = "single"
         profile.reportingCurrency = "EUR"
@@ -109,6 +109,32 @@ struct FilingPreviewEndpointTests {
                 #expect(body.sections.first?.rows.first?[0] == "G01")
                 #expect(body.sections.first?.rows.first?[1] == "528")
                 #expect(body.summary["totalGain"] == Decimal(296)) // proceeds 1300 - 2 fees, basis 1000 + 2 fees
+            })
+        }
+    }
+
+    @Test("Preview for a complete DE profile returns Anlage KAP with the disposal in Zeile 19/20")
+    func previewReturnsGermanPack() async throws {
+        try await withApp { app in
+            let user = try await registerUser(app: app)
+            try await completePortugalProfile(app: app, userId: user.userId, taxYear: 2025, jurisdiction: .germany)
+            try await seedEURRoundTrip(app: app, userId: user.userId)
+
+            try await app.testing().test(.GET, "v1/tax/filing/preview?taxYear=2025", beforeRequest: { req in
+                req.headers.bearerAuthorization = .init(token: user.token)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let body = try res.content.decode(FilingPackPreviewResponse.self)
+                #expect(body.jurisdiction == .germany)
+                #expect(body.formName == "ESt 1 A — Anlage KAP / KAP-INV")
+                #expect(body.rulePackVersion == "DE-2026.1")
+                #expect(body.disposalCount == 1)
+                #expect(body.dividendCount == 0)
+                #expect(body.unsupportedCount == 0)
+                let kap = try #require(body.sections.first { $0.id == GermanyAnlageKAPMapper.kapSectionID })
+                #expect(kap.rows.first { $0[0] == "19" }?[2] == "296.00")
+                #expect(kap.rows.first { $0[0] == "20" }?[2] == "296.00")
+                #expect(body.summary["totalGain"] == Decimal(296))
             })
         }
     }

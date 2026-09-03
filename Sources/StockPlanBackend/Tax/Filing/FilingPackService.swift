@@ -61,7 +61,7 @@ struct FilingPackService: Sendable {
         let sections = pack.sections.map { section in
             FilingPackSectionDTO(id: section.id, title: section.title, columns: section.columns, rows: section.rows, totals: section.totals, notes: section.notes)
         }
-        let rows = { (id: String) in pack.sections.first { $0.id == id }?.rows.count ?? 0 }
+        let counts = FilingCountryMappers.counts(of: pack)
         return FilingPackPreviewResponse(
             jurisdiction: pack.jurisdiction,
             taxYear: pack.taxYear,
@@ -71,9 +71,9 @@ struct FilingPackService: Sendable {
             sections: sections,
             summary: pack.summary,
             disclaimer: pack.disclaimer,
-            disposalCount: rows(PortugalAnexoJMapper.sharesSectionID),
-            dividendCount: rows(PortugalAnexoJMapper.dividendsSectionID),
-            unsupportedCount: rows(PortugalAnexoJMapper.unsupportedSectionID)
+            disposalCount: counts.disposals,
+            dividendCount: counts.dividends,
+            unsupportedCount: counts.unsupported
         )
     }
 }

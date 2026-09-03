@@ -35,7 +35,30 @@ enum FilingCountryMappers {
     static func mapper(for jurisdiction: TaxJurisdiction) -> (any FilingCountryMapper)? {
         switch jurisdiction {
         case .portugal: PortugalAnexoJMapper()
+        case .germany: GermanyAnlageKAPMapper()
         default: nil
+        }
+    }
+
+    /// Row counts the preview shows, read from the sections each mapper
+    /// designates for disposals, dividends, and the manual-check list.
+    static func counts(of pack: FilingPack) -> (disposals: Int, dividends: Int, unsupported: Int) {
+        let rows = { (ids: [String]) -> Int in
+            ids.reduce(0) { total, id in total + (pack.sections.first { $0.id == id }?.rows.count ?? 0) }
+        }
+        switch pack.jurisdiction {
+        case .germany:
+            return (
+                rows([GermanyAnlageKAPMapper.disposalsSectionID, GermanyAnlageKAPMapper.fundDisposalsSectionID]),
+                rows([GermanyAnlageKAPMapper.dividendsSectionID]),
+                rows([GermanyAnlageKAPMapper.unsupportedSectionID])
+            )
+        default:
+            return (
+                rows([PortugalAnexoJMapper.sharesSectionID]),
+                rows([PortugalAnexoJMapper.dividendsSectionID]),
+                rows([PortugalAnexoJMapper.unsupportedSectionID])
+            )
         }
     }
 }

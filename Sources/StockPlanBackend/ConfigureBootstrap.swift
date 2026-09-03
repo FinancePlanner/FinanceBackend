@@ -324,6 +324,7 @@ func registerMigrations(_ app: Application) {
     app.migrations.add(CreateSentimentUniverseSymbol())
     app.migrations.add(AddExpenseHotPathIndexes())
     app.migrations.add(CreateFXDailyRates())
+    app.migrations.add(CreateTaxPackEntitlements())
     app.migrations.add(AddDividendWithholding())
 }
 

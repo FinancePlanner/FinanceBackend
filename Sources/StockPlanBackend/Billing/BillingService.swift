@@ -125,6 +125,21 @@ struct DefaultBillingService: BillingService {
         }
 
         switch event.type {
+        case "NON_RENEWING_PURCHASE":
+            // Consumables never touch the subscription or the Pro entitlement.
+            // The only one we sell is the per-year filing pack.
+            guard let taxYear = TaxPackEntitlementService.taxYear(fromProductId: event.productId) else {
+                return
+            }
+            try await TaxPackEntitlementService().grant(
+                userId: userId,
+                taxYear: taxYear,
+                source: normalizedStore(for: event) ?? provider,
+                productId: event.productId ?? TaxPackEntitlementService.productId(taxYear: taxYear),
+                providerEventId: event.id,
+                on: db
+            )
+
         case "INITIAL_PURCHASE", "RENEWAL", "UNCANCELLATION":
             let update = try await upsertSubscription(
                 userId: userId,

@@ -389,27 +389,33 @@ struct TaxController: RouteCollection {
     @Sendable
     private func filingPreview(req: Request) async throws -> FilingPackPreviewResponse {
         let session = try req.auth.require(SessionToken.self)
-        try await requireTaxPro(req, userId: session.userId)
         guard let taxYear = req.query[Int.self, at: "taxYear"], taxYear >= 2000, taxYear <= 2100 else {
             throw Abort(.badRequest, reason: "taxYear is required.")
         }
+        try await requireFilingPackAccess(req, userId: session.userId, taxYear: taxYear)
         return try await FilingPackService().preview(userId: session.userId, taxYear: taxYear, on: req)
     }
 
     private func createReport(req: Request) async throws -> TaxReportResponse {
         let session = try req.auth.require(SessionToken.self)
-        try await requireTaxPro(req, userId: session.userId)
-        try await req.usageCounterService.enforceResourceLimit(
-            .reportGenerations,
-            userId: session.userId,
-            currentCount: TaxReport.query(on: req.db)
-                .filter(\.$userId == session.userId)
-                .filter(\.$status ~~ ["pending", "retry", "generating", "ready"])
-                .count(),
-            adding: 1,
-            on: req.db
-        )
         let payload = try req.content.decode(TaxReportRequest.self)
+        if payload.kind == .annualFilingPack {
+            // The pack is what a per-year purchase buys, so it is exempt from
+            // the monthly report quota; every other kind stays Pro-only.
+            try await requireFilingPackAccess(req, userId: session.userId, taxYear: payload.taxYear)
+        } else {
+            try await requireTaxPro(req, userId: session.userId)
+            try await req.usageCounterService.enforceResourceLimit(
+                .reportGenerations,
+                userId: session.userId,
+                currentCount: TaxReport.query(on: req.db)
+                    .filter(\.$userId == session.userId)
+                    .filter(\.$status ~~ ["pending", "retry", "generating", "ready"])
+                    .count(),
+                adding: 1,
+                on: req.db
+            )
+        }
         let model = TaxReport()
         model.userId = session.userId
         model.taxYear = payload.taxYear
@@ -464,9 +470,6 @@ struct TaxController: RouteCollection {
 
     private func ownedReport(_ req: Request, requiresPro: Bool = true) async throws -> TaxReport {
         let session = try req.auth.require(SessionToken.self)
-        if requiresPro {
-            try await requireTaxPro(req, userId: session.userId)
-        }
         guard let rawID = req.parameters.get("reportId"),
               let id = UUID(uuidString: rawID),
               let report = try await TaxReport.query(on: req.db)
@@ -474,11 +477,30 @@ struct TaxController: RouteCollection {
               .filter(\.$userId == session.userId)
               .first()
         else { throw Abort(.notFound, reason: "Tax report not found.") }
+        if requiresPro {
+            if report.kind == TaxReportKind.annualFilingPack.rawValue {
+                try await requireFilingPackAccess(req, userId: session.userId, taxYear: report.taxYear)
+            } else {
+                try await requireTaxPro(req, userId: session.userId)
+            }
+        }
         return report
     }
 
     private func requireTaxPro(_ req: Request, userId: UUID) async throws {
         try await req.usageCounterService.requirePremium(.taxOptimization, userId: userId, on: req.db)
+    }
+
+    /// Pro, or a purchased pack for exactly this tax year. The upgrade error
+    /// is rethrown untouched so clients keep seeing the same 402/403 paywall.
+    private func requireFilingPackAccess(_ req: Request, userId: UUID, taxYear: Int) async throws {
+        do {
+            try await requireTaxPro(req, userId: userId)
+        } catch let upgrade as BillingUpgradeRequiredError {
+            guard try await TaxPackEntitlementService().hasEntitlement(userId: userId, taxYear: taxYear, on: req.db) else {
+                throw upgrade
+            }
+        }
     }
 }
 
