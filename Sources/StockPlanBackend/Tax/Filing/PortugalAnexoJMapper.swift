@@ -113,6 +113,16 @@ struct PortugalAnexoJMapper: FilingCountryMapper {
             "US": "840", "PT": "620", "DE": "276", "FR": "250", "NL": "528", "IE": "372", "GB": "826",
             "CH": "756", "ES": "724", "IT": "380", "LU": "442", "BE": "056", "AT": "040", "DK": "208",
             "SE": "752", "FI": "246", "NO": "578", "CA": "124", "JP": "392", "AU": "036", "JE": "832",
+            // Offshore domiciles common for US-listed ADRs and holding companies
+            // (DLO, GRAB → KY; many insurers → BM), plus the rest of the usual
+            // IBKR universe. ISO 3166-1 numeric.
+            "KY": "136", "BM": "060", "VG": "092", "PA": "591", "LR": "430", "MH": "584", "CW": "531",
+            "GG": "831", "IM": "833", "CY": "196", "MT": "470", "IL": "376", "CN": "156", "HK": "344",
+            "SG": "702", "TW": "158", "KR": "410", "IN": "356", "BR": "076", "MX": "484", "AR": "032",
+            "CL": "152", "NZ": "554", "ZA": "710", "PR": "630", "GR": "300", "PL": "616", "CZ": "203",
+            "HU": "348", "TR": "792", "AE": "784", "SA": "682", "ID": "360", "TH": "764", "MY": "458",
+            "PH": "608", "VN": "704", "RU": "643", "IS": "352", "LI": "438", "MC": "492", "SK": "703",
+            "SI": "705", "HR": "191", "RO": "642", "BG": "100", "EE": "233", "LV": "428", "LT": "440",
         ]
         guard let alpha2 = alpha2?.uppercased() else { return "" }
         return table[alpha2] ?? ""

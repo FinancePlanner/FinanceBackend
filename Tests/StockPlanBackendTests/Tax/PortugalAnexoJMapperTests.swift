@@ -66,6 +66,13 @@ struct PortugalAnexoJMapperTests {
         #expect(quadro.rows[0][1] == "")
     }
 
+    @Test("Offshore domiciles resolve to their ISO numeric code instead of a blank")
+    func offshoreCountries() {
+        #expect(PortugalAnexoJMapper.numericCountry("KY") == "136")
+        #expect(PortugalAnexoJMapper.numericCountry("bm") == "060")
+        #expect(PortugalAnexoJMapper.numericCountry("XS") == "")
+    }
+
     @Test("Money formatting always carries two decimals")
     func moneyFormat() throws {
         #expect(FilingFormat.money(910) == "910.00")

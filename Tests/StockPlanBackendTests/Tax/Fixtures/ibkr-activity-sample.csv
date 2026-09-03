@@ -18,3 +18,4 @@ Withholding Tax,Data,USD,2025-05-15,AAPL(US0378331005) Cash Dividend USD 0.25 pe
 Withholding Tax,Data,Total,,,-0.38,
 Financial Instrument Information,Header,Asset Category,Symbol,Description,Conid,Security ID,Listing Exch,Multiplier,Type,Code
 Financial Instrument Information,Data,Stocks,AAPL,APPLE INC,265598,US0378331005,NASDAQ,1,COMMON,
+Financial Instrument Information,Data,Stocks,"CSPX, SXR8",ISHARES CORE S&P 500,75776072,IE00B5BMR087,IBIS2,1,ETF,

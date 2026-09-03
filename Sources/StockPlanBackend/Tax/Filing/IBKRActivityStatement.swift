@@ -83,18 +83,26 @@ struct IBKRActivityStatement: Sendable, Equatable {
         let dividends = cashLines(sections("Dividends"))
         let withholding = cashLines(sections("Withholding Tax"))
 
+        // One instrument can trade under several symbols; IBKR then writes
+        // them into one quoted field ("CSPX, SXR8"). Register every alias so
+        // trades under either symbol find the ISIN and the type.
         let instruments = sections("Financial Instrument Information").flatMap { section in
-            section.rows.compactMap { row -> InstrumentInfo? in
-                guard let symbol = row["symbol"], !symbol.isEmpty else { return nil }
-                return InstrumentInfo(
-                    symbol: symbol,
-                    assetCategory: row["assetcategory"] ?? "",
-                    description: row["description"] ?? symbol,
-                    conid: row["conid"].flatMap { $0.isEmpty ? nil : $0 },
-                    isin: row["securityid"].flatMap { $0.isEmpty ? nil : $0.uppercased() },
-                    listingExchange: row["listingexch"].flatMap { $0.isEmpty ? nil : $0 },
-                    type: row["type"].flatMap { $0.isEmpty ? nil : $0 }
-                )
+            section.rows.flatMap { row -> [InstrumentInfo] in
+                let symbols = (row["symbol"] ?? "")
+                    .split(separator: ",")
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { !$0.isEmpty }
+                return symbols.map { symbol in
+                    InstrumentInfo(
+                        symbol: symbol,
+                        assetCategory: row["assetcategory"] ?? "",
+                        description: row["description"] ?? symbol,
+                        conid: row["conid"].flatMap { $0.isEmpty ? nil : $0 },
+                        isin: row["securityid"].flatMap { $0.isEmpty ? nil : $0.uppercased() },
+                        listingExchange: row["listingexch"].flatMap { $0.isEmpty ? nil : $0 },
+                        type: row["type"].flatMap { $0.isEmpty ? nil : $0 }
+                    )
+                }
             }
         }
 

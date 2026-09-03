@@ -14,6 +14,9 @@ struct IBKRActivityStatementImporter: Sendable {
         /// Sells with no lot to close against (position opened before the
         /// statement starts). They are stored but produce no filing row.
         let unmatchedSells: Int
+        /// "SYMBOL yyyy-MM-dd" for each unmatched sell, so the user knows which
+        /// earlier statement to add.
+        let unmatchedSellReferences: [String]
         let dividends: Int
         let dividendsWithWithholding: Int
         let skippedTradeRows: Int
@@ -55,6 +58,7 @@ struct IBKRActivityStatementImporter: Sendable {
         var transactions = 0
         var lotDisposals = 0
         var unmatchedSells = 0
+        var unmatchedSellReferences: [String] = []
         for (index, trade) in statement.trades.enumerated() {
             guard let instrumentId = instrumentIds[trade.symbol], trade.quantity != 0 else { continue }
             let transaction = Transaction(
@@ -77,6 +81,7 @@ struct IBKRActivityStatementImporter: Sendable {
                     lotDisposals += try await accounting.recordDisposal(transaction: transaction, method: .fifo, on: db).count
                 } catch {
                     unmatchedSells += 1
+                    unmatchedSellReferences.append("\(trade.symbol) \(FilingFormat.isoDate(trade.tradeDate))")
                 }
             }
         }
@@ -112,6 +117,7 @@ struct IBKRActivityStatementImporter: Sendable {
             transactions: transactions,
             lotDisposals: lotDisposals,
             unmatchedSells: unmatchedSells,
+            unmatchedSellReferences: unmatchedSellReferences,
             dividends: reconciled.count,
             dividendsWithWithholding: withWithholding,
             skippedTradeRows: statement.skippedTradeRows

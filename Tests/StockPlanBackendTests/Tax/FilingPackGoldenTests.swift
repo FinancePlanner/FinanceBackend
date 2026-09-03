@@ -152,7 +152,9 @@ struct FilingPackGoldenTests {
             let rendered = FilingPackRenderer().csv(pack)
 
             // Anything the pipeline could not place must be visible, not silent.
-            #expect(result.unmatchedSells == 0, "sells without an opening lot in the statement: \(result.unmatchedSells) — extend the statement back to the first buy or seed opening lots")
+            #expect(result.unmatchedSells == 0, "sells without an opening lot in the statement: \(result.unmatchedSellReferences.joined(separator: ", ")) — paste the Trades rows of the earlier statement(s) that bought them")
+            let unknownInstruments = Set(ledger.disposals.filter { $0.isin == nil }.map(\.symbol))
+            #expect(unknownInstruments.isEmpty, "disposals without an ISIN (missing from Financial Instrument Information): \(unknownInstruments.sorted())")
             #expect(ledger.unsupported.isEmpty, "unsupported rows: \(ledger.unsupported)")
 
             if FileManager.default.fileExists(atPath: Self.goldenFixture.path) {

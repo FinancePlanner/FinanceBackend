@@ -40,11 +40,16 @@ struct IBKRActivityStatementTests {
     @Test("Instrument table yields ISIN, listing exchange and type")
     func instruments() throws {
         let statement = try IBKRActivityStatement.parse(Self.fixture("ibkr-activity-sample.csv"))
-        #expect(statement.instruments.count == 1)
+        #expect(statement.instruments.count == 3)
         #expect(statement.instruments[0].isin == "US0378331005")
         #expect(statement.instruments[0].listingExchange == "NASDAQ")
         #expect(statement.instruments[0].conid == "265598")
         #expect(IBKRActivityStatementImporter.instrumentType(ibkrType: statement.instruments[0].type) == "stock")
+        // "CSPX, SXR8" is one row with two symbols; both must resolve to the ETF's ISIN.
+        #expect(statement.instruments.map(\.symbol) == ["AAPL", "CSPX", "SXR8"])
+        #expect(statement.instruments[1].isin == "IE00B5BMR087")
+        #expect(statement.instruments[2].isin == "IE00B5BMR087")
+        #expect(IBKRActivityStatementImporter.instrumentType(ibkrType: statement.instruments[1].type) == "etf")
         #expect(IBKRActivityStatementImporter.instrumentType(ibkrType: "ETF") == "etf")
     }
 
