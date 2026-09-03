@@ -17,5 +17,5 @@ import Testing
 /// A global actor would be the tidier mechanism, but Vapor's
 /// `app.testing().test(...)` closures are not `Sendable`, so isolating the
 /// suite bodies to one fails to compile.
-@Suite(.serialized)
+@Suite(.serialized, .databaseLocked)
 struct AIEnvironmentSuites {}
