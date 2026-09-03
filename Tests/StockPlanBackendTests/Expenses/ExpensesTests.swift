@@ -1136,9 +1136,17 @@ struct ExpensesTests {
     func dcaCapacityPersistsSymbol() async throws {
         try await withExpensesApp { app in
             let token = try await registerTestUser(app: app)
+            // The endpoint always reads the month containing today, so the seed
+            // must follow the clock: a hard-coded August snapshot went green in
+            // August and red on 1 September (CI, 2026-09-02).
             var calendar = Calendar(identifier: .gregorian)
             calendar.timeZone = TimeZone(secondsFromGMT: 0)!
-            let monthStart = try #require(calendar.date(from: DateComponents(year: 2026, month: 8, day: 1)))
+            let today = calendar.dateComponents([.year, .month], from: Date())
+            let monthStart = try #require(calendar.date(from: DateComponents(year: today.year, month: today.month, day: 1)))
+            // Mid-month, not day 1: occurred_on is a DATE column and the range
+            // filter compares it to a timestamptz, so a midnight seed lands on
+            // the previous day when the database session is not in UTC.
+            let midMonth = try #require(calendar.date(from: DateComponents(year: today.year, month: today.month, day: 12)))
             let user = try #require(try await User.query(on: app.db).first())
             let userId = try user.requireID()
             let snapshot = BudgetSnapshot(
@@ -1170,7 +1178,7 @@ struct ExpensesTests {
                 title: "Dining Out",
                 amount: 210,
                 pillar: .fun,
-                occurredOn: #require(calendar.date(from: DateComponents(year: 2026, month: 8, day: 12)))
+                occurredOn: midMonth
             ).create(on: app.db)
 
             try await app.testing().test(.PUT, "v1/budget/dca-capacity", beforeRequest: { req in
