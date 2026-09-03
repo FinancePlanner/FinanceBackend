@@ -109,17 +109,36 @@ struct IBKRBrokerGatewayClient {
     }
 
     func fetchDividends(accountID: String, from: Date, to: Date, on req: Request) async throws -> [IBKRBrokerDividend] {
+        try await fetchDividendsAndWithholdings(accountID: accountID, from: from, to: to, on: req).dividends
+    }
+
+    /// One statement read serves both: dividend lines become `IBKRBrokerDividend`,
+    /// withholding-tax lines become `IBKRWithholdingRow` for the reconciler.
+    func fetchDividendsAndWithholdings(
+        accountID: String, from: Date, to: Date, on req: Request
+    ) async throws -> (dividends: [IBKRBrokerDividend], withholdings: [IBKRWithholdingRow]) {
         let transactions = try await fetchTransactions(accountID: accountID, from: from, to: to, on: req)
-        return transactions.compactMap { transaction -> IBKRBrokerDividend? in
-            guard transaction.type == "DIV" || transaction.type == "DIVIDEND" else { return nil }
-            return IBKRBrokerDividend(
-                externalID: transaction.externalID,
-                symbol: transaction.symbol,
-                amount: transaction.amount,
-                currency: transaction.currency,
-                date: transaction.date
-            )
+        var dividends: [IBKRBrokerDividend] = []
+        var withholdings: [IBKRWithholdingRow] = []
+        for transaction in transactions {
+            if transaction.type == "DIV" || transaction.type == "DIVIDEND" {
+                dividends.append(IBKRBrokerDividend(
+                    externalID: transaction.externalID,
+                    symbol: transaction.symbol,
+                    amount: transaction.amount,
+                    currency: transaction.currency,
+                    date: transaction.date
+                ))
+            } else if DividendWithholdingReconciler.isWithholdingType(transaction.type) {
+                withholdings.append(IBKRWithholdingRow(
+                    symbol: transaction.symbol,
+                    payDate: transaction.date,
+                    amount: transaction.amount,
+                    currency: transaction.currency
+                ))
+            }
         }
+        return (dividends, withholdings)
     }
 
     private func fetchAccounts(on req: Request) async throws -> [IBKRBrokerAccount] {
@@ -676,16 +695,25 @@ struct IBKRBrokerSyncService {
         to: Date,
         on req: Request
     ) async throws -> Int {
-        let dividends = try await gatewayClient.fetchDividends(accountID: accountID, from: from, to: to, on: req)
+        let statement = try await gatewayClient.fetchDividendsAndWithholdings(accountID: accountID, from: from, to: to, on: req)
+        let dividends = statement.dividends
+        let reconciler = DividendWithholdingReconciler()
 
         var syncedCount = 0
         for ibkrDividend in dividends {
             if let externalID = ibkrDividend.externalID {
-                let exists = try await Dividend.query(on: req.db)
+                let existing = try await Dividend.query(on: req.db)
                     .filter(\.$accountId == sourceAccountId)
                     .filter(\.$externalId == externalID)
-                    .first() != nil
-                if exists {
+                    .first()
+                if let existing {
+                    // Rows imported before withholding existed get it on the next sync.
+                    if existing.withholdingTax == nil {
+                        let updated = reconciler.apply(withholdings: statement.withholdings, to: [(symbol: ibkrDividend.symbol, dividend: existing)])[0]
+                        if updated.withholdingTax != nil {
+                            try await updated.save(on: req.db)
+                        }
+                    }
                     continue
                 }
             }
@@ -707,7 +735,8 @@ struct IBKRBrokerSyncService {
                 currency: ibkrDividend.currency,
                 payDate: ibkrDividend.date
             )
-            try await dividend.save(on: req.db)
+            let reconciled = reconciler.apply(withholdings: statement.withholdings, to: [(symbol: ibkrDividend.symbol, dividend: dividend)])[0]
+            try await reconciled.save(on: req.db)
             syncedCount += 1
         }
         return syncedCount

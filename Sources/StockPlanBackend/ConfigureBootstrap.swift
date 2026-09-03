@@ -323,6 +323,8 @@ func registerMigrations(_ app: Application) {
     app.migrations.add(AddMessagingLinkConversation())
     app.migrations.add(CreateSentimentUniverseSymbol())
     app.migrations.add(AddExpenseHotPathIndexes())
+    app.migrations.add(CreateFXDailyRates())
+    app.migrations.add(AddDividendWithholding())
 }
 
 func envBool(_ key: String, default defaultValue: Bool) -> Bool {

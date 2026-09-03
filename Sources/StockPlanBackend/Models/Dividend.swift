@@ -29,6 +29,19 @@ final class Dividend: Model, Content, @unchecked Sendable {
     @Field(key: "pay_date")
     var payDate: Date
 
+    /// Tax withheld at source, positive, same currency as `amount`. Filled by
+    /// the broker sync when the statement carries a withholding line.
+    @OptionalField(key: "withholding_tax")
+    var withholdingTax: Double?
+
+    /// `amount + withholdingTax` when withholding is known.
+    @OptionalField(key: "gross_amount")
+    var grossAmount: Double?
+
+    /// ISO-3166 alpha-2 of the paying issuer, for the filing pack's country column.
+    @OptionalField(key: "source_country")
+    var sourceCountry: String?
+
     @Timestamp(key: "created_at", on: .create)
     var createdAt: Date?
 
