@@ -51,9 +51,33 @@ struct TaxReportGenerator: Sendable {
             let actionPlans = try await application.taxService.actionPlans(userId: report.userId, on: application.db)
             let format = TaxReportFormat(rawValue: report.format) ?? .pdf
             let kind = TaxReportKind(rawValue: report.kind) ?? .transactionWorkpaper
-            let data = format == .csv
-                ? csvData(dashboard, kind: kind, actionPlans: actionPlans, carryforwardLedger: carryforwardLedger, basisDisclosure: basisDisclosure)
-                : simplePDFData(dashboard, kind: kind, actionPlans: actionPlans, carryforwardLedger: carryforwardLedger, basisDisclosure: basisDisclosure)
+            let data: Data
+            if kind == .annualFilingPack {
+                // The filing pack does not derive from the dashboard: it is the
+                // lot ledger and dividends converted at ECB rates and mapped to
+                // the national form by the jurisdiction's mapper.
+                guard let mapper = FilingCountryMappers.mapper(for: jurisdiction) else {
+                    throw Abort(.unprocessableEntity, reason: "Filing pack is not available for \(jurisdiction.rawValue) yet.")
+                }
+                let resolver = FXRateResolver(
+                    provider: ECBDailyRateProvider(client: application.client),
+                    db: application.db
+                )
+                let ledger = try await FilingLedgerBuilder(fx: resolver).build(
+                    userId: report.userId,
+                    taxYear: report.taxYear,
+                    jurisdiction: jurisdiction,
+                    reportingCurrency: profile.reportingCurrency,
+                    on: application.db
+                )
+                let pack = mapper.map(ledger)
+                let renderer = FilingPackRenderer()
+                data = format == .csv ? renderer.csv(pack) : renderer.pdf(pack)
+            } else {
+                data = format == .csv
+                    ? csvData(dashboard, kind: kind, actionPlans: actionPlans, carryforwardLedger: carryforwardLedger, basisDisclosure: basisDisclosure)
+                    : simplePDFData(dashboard, kind: kind, actionPlans: actionPlans, carryforwardLedger: carryforwardLedger, basisDisclosure: basisDisclosure)
+            }
             let path = try application.taxReportStorage.store(
                 data: data,
                 userID: report.userId,
@@ -222,7 +246,7 @@ struct TaxReportGenerator: Sendable {
     }
 }
 
-private enum MinimalPDF {
+enum MinimalPDF {
     static func make(lines: [String]) -> Data {
         let pageSize = 27
         let pages = lines.isEmpty ? [[]] : stride(from: 0, to: lines.count, by: pageSize).map {

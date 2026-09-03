@@ -7590,6 +7590,19 @@ paths:
         - { name: reportId, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
         '200': { description: Tax report status, content: { application/json: { schema: { $ref: '#/components/schemas/TaxReportResponse' } } } }
+  /v1/tax/filing/preview:
+    get:
+      operationId: getTaxFilingPreview
+      tags: [Tax]
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: taxYear, in: query, required: true, schema: { type: integer } }
+      responses:
+        '200': { description: Annual filing pack preview, content: { application/json: { schema: { $ref: '#/components/schemas/FilingPackPreviewResponse' } } } }
+        '400': { description: taxYear missing }
+        '403': { description: Pro subscription required }
+        '409': { description: Tax profile for that year is incomplete }
+        '422': { description: Filing pack not available for the jurisdiction }
   /v1/tax/reports/{reportId}/download:
     get:
       operationId: downloadTaxReport
@@ -9413,8 +9426,33 @@ components:
       required: [taxYear, kind, format]
       properties:
         taxYear: { type: integer }
-        kind: { type: string, enum: [transaction_workpaper, form_8949, schedule_d_summary, country_capital_gains] }
+        kind: { type: string, enum: [transaction_workpaper, form_8949, schedule_d_summary, country_capital_gains, annual_filing_pack] }
         format: { type: string, enum: [csv, pdf] }
+    FilingPackSection:
+      type: object
+      required: [id, title, columns, rows, totals, notes]
+      properties:
+        id: { type: string }
+        title: { type: string }
+        columns: { type: array, items: { type: string } }
+        rows: { type: array, items: { type: array, items: { type: string } } }
+        totals: { type: object, additionalProperties: { type: number } }
+        notes: { type: array, items: { type: string } }
+    FilingPackPreviewResponse:
+      type: object
+      required: [jurisdiction, taxYear, reportingCurrency, formName, rulePackVersion, sections, summary, disclaimer, disposalCount, dividendCount, unsupportedCount]
+      properties:
+        jurisdiction: { $ref: '#/components/schemas/TaxJurisdiction' }
+        taxYear: { type: integer }
+        reportingCurrency: { type: string }
+        formName: { type: string }
+        rulePackVersion: { type: string }
+        sections: { type: array, items: { $ref: '#/components/schemas/FilingPackSection' } }
+        summary: { type: object, additionalProperties: { type: number } }
+        disclaimer: { type: string }
+        disposalCount: { type: integer }
+        dividendCount: { type: integer }
+        unsupportedCount: { type: integer }
     TaxReportResponse:
       type: object
       required: [id, taxYear, kind, format, status, createdAt]

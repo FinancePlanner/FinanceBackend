@@ -48,6 +48,7 @@ struct TaxController: RouteCollection {
         firstParty.delete("opportunities", ":opportunityId", "dismiss", use: restoreOpportunity)
         firstParty.get("notifications", use: getNotificationPreferences)
         firstParty.put("notifications", use: saveNotificationPreferences)
+        firstParty.get("filing", "preview", use: filingPreview)
         firstParty.post("reports", use: createReport)
         firstParty.get("reports", use: listReports)
         firstParty.get("reports", ":reportId", use: getReport)
@@ -383,7 +384,18 @@ struct TaxController: RouteCollection {
         return try await req.application.taxService.saveNotificationPreferences(userId: session.userId, request: payload, on: req.db)
     }
 
+    /// GET /v1/tax/filing/preview?taxYear= — the annual filing pack as JSON,
+    /// same numbers the generated report will carry. Pro-gated like reports.
     @Sendable
+    private func filingPreview(req: Request) async throws -> FilingPackPreviewResponse {
+        let session = try req.auth.require(SessionToken.self)
+        try await requireTaxPro(req, userId: session.userId)
+        guard let taxYear = req.query[Int.self, at: "taxYear"], taxYear >= 2000, taxYear <= 2100 else {
+            throw Abort(.badRequest, reason: "taxYear is required.")
+        }
+        return try await FilingPackService().preview(userId: session.userId, taxYear: taxYear, on: req)
+    }
+
     private func createReport(req: Request) async throws -> TaxReportResponse {
         let session = try req.auth.require(SessionToken.self)
         try await requireTaxPro(req, userId: session.userId)

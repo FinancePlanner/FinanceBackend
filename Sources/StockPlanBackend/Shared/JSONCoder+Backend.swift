@@ -18,7 +18,9 @@ private struct AnyCodingKey: CodingKey {
 
 extension JSONDecoder {
     static var backendAPI: JSONDecoder {
-        let decoder = JSONDecoder.stockPlanShared
+        // 5.2.1 made `stockPlanShared` a shared `static let`; mutating it here
+        // would leak the key strategy into every other caller. Take a fresh copy.
+        let decoder = JSONDecoder.makeStockPlanShared()
         decoder.keyDecodingStrategy = .custom { codingPath in
             guard let last = codingPath.last else {
                 return AnyCodingKey(stringValue: "")!
@@ -69,7 +71,7 @@ extension JSONDecoder {
 
 extension JSONEncoder {
     static var backendAPI: JSONEncoder {
-        let encoder = JSONEncoder.stockPlanShared
+        let encoder = JSONEncoder.makeStockPlanShared()
         encoder.keyEncodingStrategy = .useDefaultKeys
         return encoder
     }
