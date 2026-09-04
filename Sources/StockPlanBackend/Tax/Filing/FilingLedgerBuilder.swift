@@ -115,8 +115,17 @@ struct FilingLedgerBuilder: Sendable {
             taxYear: taxYear,
             reportingCurrency: reportingCurrency.uppercased(),
             jurisdiction: jurisdiction,
-            disposals: rows.sorted { $0.realizationDate < $1.realizationDate },
-            dividends: dividendRows.sorted { $0.payDate < $1.payDate },
+            // Total orders, not just by date: `sorted` is not stable, so rows
+            // sharing a date swapped places between runs and the golden pack
+            // was not reproducible. Every key is content, never a row id.
+            disposals: rows.sorted { lhs, rhs in
+                (lhs.realizationDate, lhs.symbol, lhs.acquisitionDate, lhs.realizationValue, lhs.acquisitionValue, lhs.quantity)
+                    < (rhs.realizationDate, rhs.symbol, rhs.acquisitionDate, rhs.realizationValue, rhs.acquisitionValue, rhs.quantity)
+            },
+            dividends: dividendRows.sorted { lhs, rhs in
+                (lhs.payDate, lhs.symbol, lhs.gross, lhs.withholding, lhs.net)
+                    < (rhs.payDate, rhs.symbol, rhs.gross, rhs.withholding, rhs.net)
+            },
             unsupported: unsupported
         )
         if jurisdiction == .germany {

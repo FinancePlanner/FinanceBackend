@@ -42,15 +42,22 @@ struct FilingPackGoldenTests {
     }
 
     /// The recorded ECB series, parsed by the same code the live provider uses.
+    /// One file per currency and year; acquisitions reach back into the years
+    /// before the tax year, so those series have to be recorded too.
     struct RecordedECB: FXDailyRateProviding {
+        static let usdFiles = ["ecb-usd-2024.csv", "ecb-usd-2025.csv"]
+
         let rows: [FXDailyRate]
 
-        init(file: String) throws {
-            let body = try String(contentsOf: FilingPackGoldenTests.fixturesDirectory.appendingPathComponent(file), encoding: .utf8)
+        init(files: [String]) throws {
             let formatter = DateFormatter()
             formatter.dateFormat = "yyyy-MM-dd"
             formatter.timeZone = TimeZone(secondsFromGMT: 0)
-            rows = ECBDailyRateProvider.parseCSV(body, quote: "USD", formatter: formatter)
+            rows = try files.flatMap { file in
+                let body = try String(contentsOf: FilingPackGoldenTests.fixturesDirectory.appendingPathComponent(file), encoding: .utf8)
+                return ECBDailyRateProvider.parseCSV(body, quote: "USD", formatter: formatter)
+            }
+            .sorted { $0.date < $1.date }
         }
 
         func rates(quote: String, from: Date, to: Date) async throws -> [FXDailyRate] {
@@ -100,18 +107,18 @@ struct FilingPackGoldenTests {
         let result = try await IBKRActivityStatementImporter().importStatement(
             statement, userId: userId, accountExternalId: "U0000000", baseCurrency: "EUR", on: app.db
         )
-        let resolver = try FXRateResolver(provider: RecordedECB(file: "ecb-usd-2025.csv"), db: nil)
+        let resolver = try FXRateResolver(provider: RecordedECB(files: RecordedECB.usdFiles), db: nil)
         let ledger = try await FilingLedgerBuilder(fx: resolver).build(
             userId: userId, taxYear: 2025, jurisdiction: .portugal, reportingCurrency: "EUR", on: app.db
         )
         return (PortugalAnexoJMapper().map(ledger), ledger, result)
     }
 
-    @Test("The recorded ECB fixture covers 2025 and parses through the live provider's CSV reader")
+    @Test("The recorded ECB fixtures cover 2024–2025 and parse through the live provider's CSV reader")
     func recordedRatesParse() throws {
-        let provider = try RecordedECB(file: "ecb-usd-2025.csv")
-        #expect(provider.rows.count > 240) // ~255 TARGET business days
-        #expect(provider.rows.first?.date == FXRateResolverTests.day("2025-01-02"))
+        let provider = try RecordedECB(files: RecordedECB.usdFiles)
+        #expect(provider.rows.count > 490) // ~255 TARGET business days per year
+        #expect(provider.rows.first?.date == FXRateResolverTests.day("2024-01-02"))
         #expect(provider.rows.last?.date == FXRateResolverTests.day("2025-12-31"))
         #expect(provider.rows.allSatisfy { $0.rate > 0.9 && $0.rate < 1.3 })
     }
@@ -129,7 +136,7 @@ struct FilingPackGoldenTests {
             #expect(result.dividendsWithWithholding == 1)
             #expect(result.skippedTradeRows == 4)
 
-            let provider = try RecordedECB(file: "ecb-usd-2025.csv")
+            let provider = try RecordedECB(files: RecordedECB.usdFiles)
             let rate = { (day: String) in provider.rows.first { $0.date == FXRateResolverTests.day(day) }!.rate }
             #expect(ledger.disposals.count == 1)
             let disposal = ledger.disposals[0]
