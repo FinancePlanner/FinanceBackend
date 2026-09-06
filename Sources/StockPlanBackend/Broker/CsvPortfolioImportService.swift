@@ -537,3 +537,24 @@ private extension CsvImportExistingPositionKind {
         }
     }
 }
+
+/// Manual record-keeping reuses the importer's account, portfolio and instrument
+/// resolution so a hand-entered trade lands on the same `Account` and `Instrument`
+/// rows as an imported one. Without this the two paths would create parallel
+/// records for the same holding.
+///
+/// The implementations live in a `private extension`, so this narrow façade is
+/// what other files see rather than widening that whole extension.
+extension CsvPortfolioImportService {
+    func manualEntryPortfolioListId(
+        requestedId: String?,
+        userId: UUID,
+        on db: any Database
+    ) async throws -> UUID {
+        try await requirePortfolioListId(requestedId: requestedId, userId: userId, on: db)
+    }
+
+    func manualEntryInstrument(symbol: String, on req: Request, db: any Database) async throws -> Instrument {
+        try await resolveImportInstrument(symbol: symbol, on: req, db: db)
+    }
+}

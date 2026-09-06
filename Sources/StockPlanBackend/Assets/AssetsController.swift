@@ -5,9 +5,10 @@ import Vapor
 
 struct AssetsController: RouteCollection {
     func boot(routes: any RoutesBuilder) throws {
-        let protected = routes.grouped(SessionToken.authenticator(), SessionToken.guardMiddleware())
-        let assets = protected.grouped("assets")
-        assets.get("search", use: search)
+        routes
+            .grouped(ScopedBearerAuthenticator(), SessionToken.guardMiddleware())
+            .grouped(ScopeRequirementMiddleware(.marketRead))
+            .get("assets", "search", use: search)
     }
 
     @Sendable

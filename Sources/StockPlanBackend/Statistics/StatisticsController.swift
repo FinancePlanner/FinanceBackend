@@ -9,7 +9,9 @@ struct StatisticsController: RouteCollection {
     }
 
     func boot(routes: any RoutesBuilder) throws {
-        let protected = routes.grouped(SessionToken.authenticator(), SessionToken.guardMiddleware())
+        let protected = routes
+            .grouped(ScopedBearerAuthenticator(), SessionToken.guardMiddleware())
+            .grouped(ScopeRequirementMiddleware(.portfolioRead))
         let statistics = protected.grouped("statistics")
         let stocks = statistics.grouped("stocks")
 

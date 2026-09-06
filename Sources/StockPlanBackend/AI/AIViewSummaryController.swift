@@ -10,8 +10,10 @@ import Vapor
 /// but its own daily bucket — see `AICostControls.viewSummaryBucket`.
 struct AIViewSummaryController: RouteCollection {
     func boot(routes: any RoutesBuilder) throws {
-        let protected = routes.grouped(SessionToken.authenticator(), SessionToken.guardMiddleware())
-        protected.get("ai", "view-summary", ":scope", use: summary)
+        routes
+            .grouped(ScopedBearerAuthenticator(), SessionToken.guardMiddleware())
+            .grouped(ScopeRequirementMiddleware(.assistantRead))
+            .get("ai", "view-summary", ":scope", use: summary)
     }
 
     @Sendable

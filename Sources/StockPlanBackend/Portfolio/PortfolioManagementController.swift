@@ -11,32 +11,40 @@ struct PortfolioManagementController: RouteCollection {
     }
 
     func boot(routes: any RoutesBuilder) throws {
-        let protected = routes.grouped(SessionToken.authenticator(), SessionToken.guardMiddleware())
-        protected.group("portfolios") { portfolios in
+        let protected = routes.grouped(ScopedBearerAuthenticator(), SessionToken.guardMiddleware())
+        let read = protected.grouped(ScopeRequirementMiddleware(.portfolioRead))
+        let write = protected.grouped(ScopeRequirementMiddleware(.portfolioWrite))
+
+        read.group("portfolios") { portfolios in
             portfolios.get(use: list)
-            portfolios.post(use: create)
+            portfolios.get("compare", use: compare)
             portfolios.group(":portfolioId") { portfolio in
                 portfolio.get(use: get)
+                portfolio.get("members", use: members)
+                portfolio.get("invitations", use: invitations)
+                portfolio.get("cash", use: cashPositions)
+                portfolio.get("accounts", use: accounts)
+            }
+        }
+
+        write.group("portfolios") { portfolios in
+            portfolios.post(use: create)
+            portfolios.group(":portfolioId") { portfolio in
                 portfolio.patch(use: update)
                 portfolio.delete(use: delete)
                 portfolio.post("archive", use: archive)
                 portfolio.post("clone", use: clone)
-                portfolio.get("members", use: members)
                 portfolio.delete("members", ":membershipId", use: revokeMember)
                 portfolio.post("leave", use: leavePortfolio)
-                portfolio.get("invitations", use: invitations)
                 portfolio.post("invitations", use: invite)
                 portfolio.delete("invitations", ":invitationId", use: revokeInvitation)
-                portfolio.get("cash", use: cashPositions)
                 portfolio.post("cash", use: createCashPosition)
                 portfolio.put("cash", ":cashId", use: updateCashPosition)
                 portfolio.delete("cash", ":cashId", use: deleteCashPosition)
-                portfolio.get("accounts", use: accounts)
                 portfolio.put("accounts", ":accountId", use: assignAccount)
             }
-            portfolios.get("compare", use: compare)
         }
-        protected.post("portfolio-invitations", "accept", use: acceptInvitation)
+        write.post("portfolio-invitations", "accept", use: acceptInvitation)
     }
 
     @Sendable

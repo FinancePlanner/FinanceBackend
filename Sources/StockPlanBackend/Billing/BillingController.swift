@@ -10,13 +10,17 @@ struct BillingManagementURLResponse: Content {
 
 struct BillingController: RouteCollection {
     func boot(routes: any RoutesBuilder) throws {
-        let protected = routes.grouped(SessionToken.authenticator(), SessionToken.guardMiddleware())
-        let billing = protected.grouped("billing")
+        let protected = routes.grouped(ScopedBearerAuthenticator(), SessionToken.guardMiddleware())
 
-        billing.get("me", use: me)
-        billing.post("restore", use: restore)
-        billing.post("management-url", use: managementURL)
-        billing.post("coupon", "redeem", use: redeemCoupon)
+        protected.grouped(ScopeRequirementMiddleware(.billingRead))
+            .get("billing", "me", use: me)
+
+        protected.grouped(ScopeRequirementMiddleware(.billingWrite))
+            .group("billing") { billing in
+                billing.post("restore", use: restore)
+                billing.post("management-url", use: managementURL)
+                billing.post("coupon", "redeem", use: redeemCoupon)
+            }
     }
 
     @Sendable

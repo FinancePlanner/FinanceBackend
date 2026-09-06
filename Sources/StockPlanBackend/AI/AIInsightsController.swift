@@ -4,8 +4,10 @@ import Vapor
 
 struct AIInsightsController: RouteCollection {
     func boot(routes: any RoutesBuilder) throws {
-        let protected = routes.grouped(SessionToken.authenticator(), SessionToken.guardMiddleware())
-        let insights = protected.grouped("ai", "insights")
+        let insights = routes
+            .grouped(ScopedBearerAuthenticator(), SessionToken.guardMiddleware())
+            .grouped(ScopeRequirementMiddleware(.assistantRead))
+            .grouped("ai", "insights")
 
         insights.get("expenses", use: expenses)
         insights.get("portfolio", use: portfolio)

@@ -3,20 +3,34 @@ import Vapor
 
 struct UserProfileController: RouteCollection {
     func boot(routes: any RoutesBuilder) throws {
-        let protected = routes.grouped(SessionToken.authenticator(), SessionToken.guardMiddleware())
-        let userProfile = protected.grouped("users")
-        let userProfileByID = userProfile.grouped(":id")
+        // Reads are scopeable; every mutation here is not.
+        //
+        // `DELETE /v1/users` is irreversible, and `PUT /v1/users` plus the PATCH
+        // routes all change credentials — `UpdateUserProfileRequest` carries email
+        // and username, so an agent holding it could move the account to an address
+        // it controls. These stay on the first-party session authenticator, which
+        // rejects opaque tokens outright; FirstPartyOnlyMiddleware is belt-and-braces
+        // so a future swap of the authenticator cannot silently open them.
+        let firstParty = routes
+            .grouped(SessionToken.authenticator(), SessionToken.guardMiddleware())
+            .grouped(FirstPartyOnlyMiddleware())
+        let users = firstParty.grouped("users")
 
-        userProfile.get(use: getProfile)
-        userProfile.put(use: updateProfile)
-        userProfile.patch("username", use: updateUsername)
-        userProfile.patch("email", use: updateEmail)
-        userProfile.patch("password", use: updatePassword)
-        userProfile.delete(use: deleteProfile)
+        users.put(use: updateProfile)
+        users.patch("username", use: updateUsername)
+        users.patch("email", use: updateEmail)
+        users.patch("password", use: updatePassword)
+        users.delete(use: deleteProfile)
 
-        userProfileByID.get(use: getProfileByID)
-        userProfileByID.put(use: updateProfileByID)
-        userProfileByID.delete(use: deleteProfileByID)
+        users.group(":id") { byID in
+            byID.get(use: getProfileByID)
+            byID.put(use: updateProfileByID)
+            byID.delete(use: deleteProfileByID)
+        }
+
+        routes.grouped(ScopedBearerAuthenticator(), SessionToken.guardMiddleware())
+            .grouped(ScopeRequirementMiddleware(.settingsRead))
+            .get("users", use: getProfile)
     }
 
     @Sendable

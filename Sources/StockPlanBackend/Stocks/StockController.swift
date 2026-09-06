@@ -10,62 +10,73 @@ struct StockController: RouteCollection {
     }
 
     func boot(routes: any RoutesBuilder) throws {
-        let protected = routes.grouped(SessionToken.authenticator(), SessionToken.guardMiddleware())
+        // ScopedBearerAuthenticator accepts a first-party session JWT *or* an opaque
+        // PAT/OAuth token, logging in a synthesised SessionToken either way, so every
+        // handler below is unchanged. ScopeRequirementMiddleware is a no-op for
+        // first-party sessions, which carry no ScopeContext.
+        let protected = routes.grouped(ScopedBearerAuthenticator(), SessionToken.guardMiddleware())
 
-        let stocks = protected.grouped("stocks")
-        stocks.get(use: listStocks)
-        stocks.post(use: createStock)
-        stocks.post("bulk", use: bulkCreateStocks)
+        let holdingsRead = protected.grouped(ScopeRequirementMiddleware(.holdingsRead))
+        let holdingsWrite = protected.grouped(ScopeRequirementMiddleware(.holdingsWrite))
+
+        let stocksRead = holdingsRead.grouped("stocks")
+        let stocksWrite = holdingsWrite.grouped("stocks")
+        stocksRead.get(use: listStocks)
+        stocksWrite.post(use: createStock)
+        stocksWrite.post("bulk", use: bulkCreateStocks)
 
         // Symbol-based routes (use explicit "symbol" prefix to avoid conflicts)
-        stocks.get("symbol", ":symbol", "insights", use: getStockInsights)
+        stocksRead.get("symbol", ":symbol", "insights", use: getStockInsights)
         // Backward-compatible route retained for clients/contracts using /v1/stocks/{symbol}/insights.
-        stocks.get(":symbol", "insights", use: getStockInsights)
-        stocks.group("symbol", ":symbol", "valuation") { valuation in
-            valuation.get(use: getStockValuation)
+        stocksRead.get(":symbol", "insights", use: getStockInsights)
+        stocksRead.get("symbol", ":symbol", "valuation", use: getStockValuation)
+        stocksWrite.group("symbol", ":symbol", "valuation") { valuation in
             valuation.post(use: createStockValuation)
             valuation.put(use: updateStockValuation)
         }
 
         // ID-based routes (use explicit "id" prefix to avoid conflicts)
-        stocks.group("id", ":stockId") { stock in
-            stock.get(use: getStock)
+        stocksRead.get("id", ":stockId", use: getStock)
+        stocksWrite.group("id", ":stockId") { stock in
             stock.put(use: updateStock)
             stock.post("sell", use: sellStock)
             stock.delete(use: deleteStock)
         }
 
-        let watchlist = protected.grouped("watchlist")
-        watchlist.get(use: listWatchlist)
-        watchlist.post(use: createWatchlistItem)
-        watchlist.post("import", "csv", "preview", use: importWatchlistCsvPreview)
-        watchlist.post("import", "csv", "commit", use: importWatchlistCsvCommit)
-        watchlist.group("lists") { lists in
-            lists.get(use: listWatchlistLists)
+        let watchlistRead = protected.grouped(ScopeRequirementMiddleware(.watchlistRead)).grouped("watchlist")
+        let watchlistWrite = protected.grouped(ScopeRequirementMiddleware(.watchlistWrite)).grouped("watchlist")
+        watchlistRead.get(use: listWatchlist)
+        watchlistWrite.post(use: createWatchlistItem)
+        watchlistWrite.post("import", "csv", "preview", use: importWatchlistCsvPreview)
+        watchlistWrite.post("import", "csv", "commit", use: importWatchlistCsvCommit)
+        watchlistRead.get("lists", use: listWatchlistLists)
+        watchlistWrite.group("lists") { lists in
             lists.post(use: createWatchlistList)
             lists.group(":watchlistListId") { list in
                 list.patch(use: updateWatchlistList)
                 list.delete(use: deleteWatchlistList)
             }
         }
-        watchlist.group(":watchlistId") { item in
+        watchlistWrite.group(":watchlistId") { item in
             item.patch(use: updateWatchlistItem)
             item.delete(use: deleteWatchlistItem)
         }
 
-        let research = protected.grouped("research")
-        research.get(use: listResearch)
-        research.post(use: createResearch)
-        research.group(":researchId") { note in
-            note.get(use: getResearch)
+        let researchRead = protected.grouped(ScopeRequirementMiddleware(.researchRead)).grouped("research")
+        let researchWrite = protected.grouped(ScopeRequirementMiddleware(.researchWrite)).grouped("research")
+        researchRead.get(use: listResearch)
+        researchWrite.post(use: createResearch)
+        researchRead.get(":researchId", use: getResearch)
+        researchWrite.group(":researchId") { note in
             note.put(use: updateResearch)
             note.delete(use: deleteResearch)
         }
 
-        let targets = protected.grouped("targets")
-        targets.get(use: listTargets)
-        targets.post(use: createTarget)
-        targets.group(":targetId") { target in
+        let targetsRead = protected.grouped(ScopeRequirementMiddleware(.targetsRead)).grouped("targets")
+        let targetsWrite = protected.grouped(ScopeRequirementMiddleware(.targetsWrite)).grouped("targets")
+        targetsRead.get(use: listTargets)
+        targetsWrite.post(use: createTarget)
+        targetsWrite.group(":targetId") { target in
             target.put(use: updateTarget)
             target.delete(use: deleteTarget)
         }

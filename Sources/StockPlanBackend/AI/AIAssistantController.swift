@@ -13,23 +13,35 @@ struct AIAssistantController: RouteCollection {
     }
 
     func boot(routes: any RoutesBuilder) throws {
-        let group = routes.grouped(SessionToken.authenticator(), SessionToken.guardMiddleware()).grouped("ai", "assistant")
-        group.get("conversations", use: listConversations)
-        group.post("conversations", use: createConversation)
-        group.get("conversations", ":id", use: getConversation)
-        group.delete("conversations", ":id", use: deleteConversation)
-        group.post("conversations", ":id", "messages", use: createMessage)
-        group.post("conversations", ":id", "chat", use: chat)
-        group.post("conversations", ":id", "stream", use: streamChat)
-        group.get("preferences", use: getPreferences)
-        group.put("preferences", use: updatePreferences)
-        group.get("tips", use: listTips)
-        group.post("tips", ":id", "seen", use: markTipSeen)
-        group.delete("tips", ":id", use: dismissTip)
-        group.get("usage", use: getUsage)
-        group.get("actions", use: listPendingActions)
-        group.post("actions", ":id", "cancel", use: cancelAction)
-        group.post("actions", ":id", "confirm", use: confirmAction)
+        let protected = routes.grouped(ScopedBearerAuthenticator(), SessionToken.guardMiddleware())
+        let read = protected.grouped(ScopeRequirementMiddleware(.assistantRead)).grouped("ai", "assistant")
+        let write = protected.grouped(ScopeRequirementMiddleware(.assistantWrite)).grouped("ai", "assistant")
+
+        read.get("conversations", use: listConversations)
+        read.get("conversations", ":id", use: getConversation)
+        read.get("preferences", use: getPreferences)
+        read.get("tips", use: listTips)
+        read.get("usage", use: getUsage)
+        read.get("actions", use: listPendingActions)
+
+        write.post("conversations", use: createConversation)
+        write.delete("conversations", ":id", use: deleteConversation)
+        write.post("conversations", ":id", "messages", use: createMessage)
+        write.post("conversations", ":id", "chat", use: chat)
+        write.post("conversations", ":id", "stream", use: streamChat)
+        write.put("preferences", use: updatePreferences)
+        write.post("tips", ":id", "seen", use: markTipSeen)
+        write.delete("tips", ":id", use: dismissTip)
+        write.post("actions", ":id", "cancel", use: cancelAction)
+
+        // Confirming a pending action executes whatever write the assistant
+        // proposed, which may touch any domain. Reachable by a token holding only
+        // assistant:write, that is a scope-bypass with the same shape as token
+        // minting, so it stays first-party until deliberately decided otherwise.
+        routes
+            .grouped(SessionToken.authenticator(), SessionToken.guardMiddleware())
+            .grouped(FirstPartyOnlyMiddleware())
+            .post("ai", "assistant", "actions", ":id", "confirm", use: confirmAction)
     }
 
     @Sendable private func listConversations(req: Request) async throws -> Response {

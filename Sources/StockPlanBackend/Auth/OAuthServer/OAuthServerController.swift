@@ -19,7 +19,11 @@ struct OAuthServerController: RouteCollection {
         oauth.post("revoke", use: revoke)
 
         // Consent approval is driven by norviq-web with the user's session JWT.
-        let authed = oauth.grouped(SessionToken.authenticator(), SessionToken.guardMiddleware())
+        // Never scopeable: approving a consent flow grants a third party access to
+        // the account, so a token must not be able to widen its own reach this way.
+        let authed = oauth
+            .grouped(SessionToken.authenticator(), SessionToken.guardMiddleware())
+            .grouped(FirstPartyOnlyMiddleware())
         authed.get("flows", ":flowID", use: flowDetail)
         authed.post("flows", ":flowID", "approve", use: approve)
         authed.post("flows", ":flowID", "deny", use: deny)

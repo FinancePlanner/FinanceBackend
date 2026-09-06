@@ -53,14 +53,15 @@ struct TelegramPreferenceUpdateRequest: Content {
 /// proves the person holding the account also holds the chat.
 struct MessagingController: RouteCollection {
     func boot(routes: any RoutesBuilder) throws {
-        let group = routes
-            .grouped(SessionToken.authenticator(), SessionToken.guardMiddleware())
-            .grouped("integrations", "telegram")
-        group.get(use: status)
-        group.post("code", use: createCode)
-        group.delete(use: disconnect)
-        group.get("preferences", use: listPreferences)
-        group.put("preferences", use: updatePreference)
+        let protected = routes.grouped(ScopedBearerAuthenticator(), SessionToken.guardMiddleware())
+        let read = protected.grouped(ScopeRequirementMiddleware(.integrationsRead)).grouped("integrations", "telegram")
+        let write = protected.grouped(ScopeRequirementMiddleware(.integrationsWrite)).grouped("integrations", "telegram")
+
+        read.get(use: status)
+        write.post("code", use: createCode)
+        write.delete(use: disconnect)
+        read.get("preferences", use: listPreferences)
+        write.put("preferences", use: updatePreference)
     }
 
     @Sendable func status(req: Request) async throws -> TelegramStatusResponse {

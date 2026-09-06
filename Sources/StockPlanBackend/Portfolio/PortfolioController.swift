@@ -17,13 +17,15 @@ struct PortfolioController: RouteCollection {
     }
 
     func boot(routes: any RoutesBuilder) throws {
-        let protected = routes.grouped(SessionToken.authenticator(), SessionToken.guardMiddleware())
-        let portfolio = protected.grouped("portfolio")
-        portfolio.get("performance", use: performance)
-        portfolio.get("sector-exposure", use: sectorExposure)
-        portfolio.get("dividends", use: dividends)
-        portfolio.group("lists") { lists in
-            lists.get(use: listPortfolioLists)
+        let protected = routes.grouped(ScopedBearerAuthenticator(), SessionToken.guardMiddleware())
+
+        let portfolioRead = protected.grouped(ScopeRequirementMiddleware(.portfolioRead)).grouped("portfolio")
+        let portfolioWrite = protected.grouped(ScopeRequirementMiddleware(.portfolioWrite)).grouped("portfolio")
+        portfolioRead.get("performance", use: performance)
+        portfolioRead.get("sector-exposure", use: sectorExposure)
+        portfolioRead.get("dividends", use: dividends)
+        portfolioRead.get("lists", use: listPortfolioLists)
+        portfolioWrite.group("lists") { lists in
             lists.post(use: createPortfolioList)
             lists.group(":portfolioListId") { list in
                 list.patch(use: updatePortfolioList)
@@ -31,17 +33,15 @@ struct PortfolioController: RouteCollection {
             }
         }
 
-        protected.get("transactions", use: transactions)
-        protected.get("lots", use: lots)
-        protected.get("pnl", use: pnl)
+        // GET /v1/transactions lives in TransactionController alongside the writes.
+        let transactionsRead = protected.grouped(ScopeRequirementMiddleware(.transactionsRead))
+        transactionsRead.get("lots", use: lots)
+        transactionsRead.get("pnl", use: pnl)
 
-        // Scoped auth: first-party JWTs pass through untouched. Holdings are not market
-        // data, so `summary` is gated on portfolio:read — but market:read is still accepted
-        // so PATs issued before that scope existed keep working without re-issue.
-        // Only `summary` is exposed to third-party tokens — the rest of this controller
-        // stays first-party only.
-        let scoped = routes.grouped(ScopedBearerAuthenticator(), SessionToken.guardMiddleware())
-        scoped.grouped("portfolio")
+        // Holdings are not market data, so `summary` is gated on portfolio:read — but
+        // market:read is still accepted so PATs issued before that scope existed keep
+        // working without re-issue.
+        protected.grouped("portfolio")
             .grouped(ScopeRequirementMiddleware(anyOf: [.portfolioRead, .marketRead]))
             .get("summary", use: summary)
     }
@@ -259,12 +259,6 @@ struct PortfolioController: RouteCollection {
             baseCurrency: filter.baseCurrency,
             points: points
         )
-    }
-
-    @Sendable
-    func transactions(req: Request) async throws -> [TransactionResponse] {
-        _ = try req.auth.require(SessionToken.self)
-        return []
     }
 
     @Sendable

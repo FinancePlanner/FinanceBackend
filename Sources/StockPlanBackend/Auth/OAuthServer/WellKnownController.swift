@@ -15,7 +15,7 @@ struct WellKnownController: RouteCollection {
             tokenEndpoint: issuer + "/v1/oauth/token",
             registrationEndpoint: issuer + "/v1/oauth/register",
             revocationEndpoint: issuer + "/v1/oauth/revoke",
-            scopesSupported: APIScope.allCases.map(\.rawValue),
+            scopesSupported: APIScope.grantable.map(\.rawValue),
             responseTypesSupported: ["code"],
             grantTypesSupported: ["authorization_code", "refresh_token"],
             codeChallengeMethodsSupported: ["S256"],

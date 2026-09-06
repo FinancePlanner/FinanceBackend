@@ -14,33 +14,37 @@ struct AdvancedReportingController: RouteCollection {
     private let recurrence = ReportRecurrenceCalculator()
 
     func boot(routes: any RoutesBuilder) throws {
-        let protected = routes.grouped(SessionToken.authenticator(), SessionToken.guardMiddleware())
-        protected.group("reporting") { reporting in
-            reporting.group("templates") { templates in
-                templates.get(use: listTemplates)
-                templates.post(use: createTemplate)
-                templates.group(":templateId") { template in
-                    template.get(use: getTemplate)
-                    template.put(use: updateTemplate)
-                    template.delete(use: archiveTemplate)
-                }
+        let protected = routes.grouped(ScopedBearerAuthenticator(), SessionToken.guardMiddleware())
+        let read = protected.grouped(ScopeRequirementMiddleware(.exportRead)).grouped("reporting")
+        let write = protected.grouped(ScopeRequirementMiddleware(.exportWrite)).grouped("reporting")
+
+        read.get("templates", use: listTemplates)
+        read.get("templates", ":templateId", use: getTemplate)
+        write.group("templates") { templates in
+            templates.post(use: createTemplate)
+            templates.group(":templateId") { template in
+                template.put(use: updateTemplate)
+                template.delete(use: archiveTemplate)
             }
-            reporting.group("schedules") { schedules in
-                schedules.get(use: listSchedules)
-                schedules.post(use: createSchedule)
-                schedules.group(":scheduleId") { schedule in
-                    schedule.get(use: getSchedule)
-                    schedule.put(use: updateSchedule)
-                    schedule.delete(use: deleteSchedule)
-                }
-            }
-            reporting.group("runs") { runs in
-                runs.get(use: listRuns)
-                runs.post(use: createRun)
-                runs.get(":runId", use: getRun)
-            }
-            reporting.get("artifacts", ":artifactId", "link", use: artifactLink)
         }
+
+        read.get("schedules", use: listSchedules)
+        read.get("schedules", ":scheduleId", use: getSchedule)
+        write.group("schedules") { schedules in
+            schedules.post(use: createSchedule)
+            schedules.group(":scheduleId") { schedule in
+                schedule.put(use: updateSchedule)
+                schedule.delete(use: deleteSchedule)
+            }
+        }
+
+        read.get("runs", use: listRuns)
+        read.get("runs", ":runId", use: getRun)
+        write.post("runs", use: createRun)
+
+        read.get("artifacts", ":artifactId", "link", use: artifactLink)
+
+        // Unauthenticated by design: the download URL is itself a signed link.
         routes.get("reporting", "artifacts", ":artifactId", "download", use: downloadArtifact)
     }
 

@@ -380,7 +380,7 @@ struct StockServiceImpl: StockService {
             throw StockServiceError.notFound
         }
 
-        _ = try parseISODateOnly(payload.sellDate, field: "sellDate")
+        let tradeDate = try parseISODateOnly(payload.sellDate, field: "sellDate")
 
         guard payload.sharesToSell > 0 else {
             throw Abort(.badRequest, reason: "Shares to sell must be greater than 0.")
@@ -396,6 +396,23 @@ struct StockServiceImpl: StockService {
 
         let proceeds = payload.sharesToSell * payload.sellPrice
 
+        // Resolved before the transaction opens. Instrument resolution can reach out
+        // to market search, and a failure there must not abort the sale — but a
+        // failure *inside* db.transaction would poison it, so it cannot live there.
+        // Instruments are shared reference data, so creating one outside the
+        // transaction is safe and matches what the importers do.
+        let sellInstrumentId: UUID? = await {
+            do {
+                return try await CsvPortfolioImportService()
+                    .manualEntryInstrument(symbol: stock.symbol, on: req, db: db).id
+            } catch {
+                req.logger.error(
+                    "stock.sell instrument_unresolved symbol=\(stock.symbol) user_id=\(userId.uuidString) error=\(error)"
+                )
+                return nil
+            }
+        }()
+
         return try await db.transaction { transactionDB in
             // 1. Update/Delete Stock
             if payload.sharesToSell == stock.shares {
@@ -407,7 +424,7 @@ struct StockServiceImpl: StockService {
             }
 
             // 2. Find or create a default manual account for cash proceeds.
-            let account = try await findOrCreateDefaultManualAccount(
+            let account = try await ManualAccountResolver.findOrCreate(
                 userId: userId,
                 portfolioId: stock.portfolioListId,
                 on: transactionDB
@@ -433,7 +450,29 @@ struct StockServiceImpl: StockService {
                 try await newCash.save(on: transactionDB)
             }
 
-            // 4. Record Activity
+            // 4. Record the disposal as a Transaction.
+            //
+            // Without this the sale existed only as a shares decrement and a cash
+            // credit, so a manually recorded sell never reached realized P&L or the
+            // tax filing pack — only broker-imported sales did. This save is not
+            // caught: it belongs to the same unit of work as the share and cash
+            // changes above, so if it fails the whole sale rolls back rather than
+            // leaving the three out of step.
+            if let accountId = account.id, let instrumentId = sellInstrumentId {
+                let record = Transaction(
+                    accountId: accountId,
+                    instrumentId: instrumentId,
+                    externalId: TransactionService.manualExternalIDPrefix + UUID().uuidString.lowercased(),
+                    type: TransactionType.sell.rawValue,
+                    quantity: payload.sharesToSell,
+                    price: payload.sellPrice,
+                    currency: currency,
+                    tradeDate: tradeDate
+                )
+                try await record.save(on: transactionDB)
+            }
+
+            // 5. Record Activity
             try? await req.userActivityService.recordActivity(
                 userId: userId,
                 type: .stockUpdated,
@@ -540,46 +579,6 @@ struct StockServiceImpl: StockService {
             throw Abort(.badRequest, reason: "Invalid \(field). Expected YYYY-MM-DD.")
         }
         return value
-    }
-
-    private func findOrCreateDefaultManualAccount(
-        userId: UUID,
-        portfolioId: UUID,
-        on db: any Database
-    ) async throws -> Account {
-        if let existing = try await Account.query(on: db)
-            .filter(\.$userId == userId)
-            .filter(\.$portfolioId == portfolioId)
-            .filter(\.$broker == "manual")
-            .first()
-        {
-            return existing
-        }
-
-        // Accounts created before multi-portfolio support have no portfolio.
-        // Adopt the user's legacy manual account so its cash balance is retained
-        // and the stable external ID is not inserted a second time.
-        if let legacy = try await Account.query(on: db)
-            .filter(\.$userId == userId)
-            .filter(\.$portfolioId == nil)
-            .filter(\.$broker == "manual")
-            .first()
-        {
-            legacy.portfolioId = portfolioId
-            try await legacy.save(on: db)
-            return legacy
-        }
-
-        let account = Account(
-            userId: userId,
-            externalId: "manual-\(userId.uuidString.lowercased())",
-            broker: "manual",
-            displayName: "Manual Cash Account",
-            baseCurrency: "USD",
-            portfolioId: portfolioId
-        )
-        try await account.save(on: db)
-        return account
     }
 
     private func resolvedCompanyName(_ value: String?, symbol: String) -> String {

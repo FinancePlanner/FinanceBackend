@@ -11,17 +11,21 @@ struct BankController: RouteCollection {
 
     func boot(routes: any RoutesBuilder) throws {
         let banks = routes.grouped("banks")
-        let protected = banks.grouped(SessionToken.authenticator(), SessionToken.guardMiddleware())
+        let protected = banks.grouped(ScopedBearerAuthenticator(), SessionToken.guardMiddleware())
+        // bank:read predates the per-domain split and is still honoured here so
+        // tokens minted against it keep reading bank data without re-issue.
+        let read = protected.grouped(ScopeRequirementMiddleware(anyOf: [.integrationsRead, .bankRead]))
+        let write = protected.grouped(ScopeRequirementMiddleware(.integrationsWrite))
 
-        protected.get("institutions", use: listInstitutions)
-        protected.post("link-session", use: createLinkSession)
-        protected.post("connections", use: exchange)
-        protected.get("connections", use: listConnections)
-        protected.delete("connections", ":id", use: disconnect)
-        protected.post("connections", ":id", "sync", use: syncConnection)
-        protected.get("transactions", use: listTransactions)
-        protected.post("transactions", ":id", "import", use: importTransaction)
-        protected.post("transactions", ":id", "dismiss", use: dismissTransaction)
+        read.get("institutions", use: listInstitutions)
+        write.post("link-session", use: createLinkSession)
+        write.post("connections", use: exchange)
+        read.get("connections", use: listConnections)
+        write.delete("connections", ":id", use: disconnect)
+        write.post("connections", ":id", "sync", use: syncConnection)
+        read.get("transactions", use: listTransactions)
+        write.post("transactions", ":id", "import", use: importTransaction)
+        write.post("transactions", ":id", "dismiss", use: dismissTransaction)
     }
 
     // MARK: - Connections

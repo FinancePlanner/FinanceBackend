@@ -4,28 +4,32 @@ import Vapor
 
 struct RebalancingController: RouteCollection {
     func boot(routes: any RoutesBuilder) throws {
-        let protected = routes.grouped(SessionToken.authenticator(), SessionToken.guardMiddleware())
-        let global = protected.grouped("rebalancing")
-        global.get("dashboard", use: dashboard)
-        global.get("alerts", use: alerts)
-        global.post("alerts", ":alertId", "acknowledge", use: acknowledgeAlert)
+        let protected = routes.grouped(ScopedBearerAuthenticator(), SessionToken.guardMiddleware())
+        let read = protected.grouped(ScopeRequirementMiddleware(.planningRead))
+        let write = protected.grouped(ScopeRequirementMiddleware(.planningWrite))
 
-        protected.group("portfolios", ":portfolioId", "rebalancing") { rebalancing in
+        read.get("rebalancing", "dashboard", use: dashboard)
+        read.get("rebalancing", "alerts", use: alerts)
+        write.post("rebalancing", "alerts", ":alertId", "acknowledge", use: acknowledgeAlert)
+
+        read.group("portfolios", ":portfolioId", "rebalancing") { rebalancing in
             rebalancing.get("models", use: models)
-            rebalancing.post("models", use: createModel)
-            rebalancing.put("models", ":modelId", use: updateModel)
-            rebalancing.post("models", ":modelId", "activate", use: activateModel)
-            rebalancing.post("models", ":modelId", "copy", use: copyModel)
             rebalancing.get("overview", use: overview)
-            rebalancing.post("simulate", use: simulate)
             rebalancing.get("plans", use: plans)
-            rebalancing.post("plans", use: createPlan)
-            rebalancing.post("plans", ":planId", "complete", use: completePlan)
-            rebalancing.post("plans", ":planId", "cancel", use: cancelPlan)
             rebalancing.get("plans", ":planId", "export.csv", use: exportCSV)
             rebalancing.get("plans", ":planId", "export.pdf", use: exportPDF)
             rebalancing.get("history", use: history)
             rebalancing.get("preferences", use: preferences)
+        }
+        write.group("portfolios", ":portfolioId", "rebalancing") { rebalancing in
+            rebalancing.post("models", use: createModel)
+            rebalancing.put("models", ":modelId", use: updateModel)
+            rebalancing.post("models", ":modelId", "activate", use: activateModel)
+            rebalancing.post("models", ":modelId", "copy", use: copyModel)
+            rebalancing.post("simulate", use: simulate)
+            rebalancing.post("plans", use: createPlan)
+            rebalancing.post("plans", ":planId", "complete", use: completePlan)
+            rebalancing.post("plans", ":planId", "cancel", use: cancelPlan)
             rebalancing.put("preferences", use: updatePreferences)
         }
     }

@@ -3,10 +3,10 @@ import Vapor
 
 struct BadgeController: RouteCollection {
     func boot(routes: any RoutesBuilder) throws {
-        let badges = routes.grouped("badges")
-        let protected = badges.grouped(SessionToken.authenticator(), SessionToken.guardMiddleware())
-
-        protected.get(use: index)
+        routes.grouped("badges")
+            .grouped(ScopedBearerAuthenticator(), SessionToken.guardMiddleware())
+            .grouped(ScopeRequirementMiddleware(.settingsRead))
+            .get(use: index)
     }
 
     @Sendable

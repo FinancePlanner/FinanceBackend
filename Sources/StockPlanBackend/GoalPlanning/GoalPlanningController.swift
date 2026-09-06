@@ -7,26 +7,33 @@ struct GoalPlanningController: RouteCollection {
     private let service = GoalPlanningService()
 
     func boot(routes: any RoutesBuilder) throws {
-        let protected = routes.grouped(SessionToken.authenticator(), SessionToken.guardMiddleware())
-        protected.group("financial-goals") { goals in
+        let protected = routes.grouped(ScopedBearerAuthenticator(), SessionToken.guardMiddleware())
+        let read = protected.grouped(ScopeRequirementMiddleware(.goalsRead))
+        let write = protected.grouped(ScopeRequirementMiddleware(.goalsWrite))
+
+        read.group("financial-goals") { goals in
             goals.get(use: list)
-            goals.post(use: create)
             goals.get("templates", use: templates)
             goals.get("overview", use: overview)
-            goals.patch("bulk", use: bulkUpdate)
             goals.group(":id") { goal in
                 goal.get(use: get)
+                goal.get("progress", use: progress)
+                goal.get("contributions", use: listContributions)
+                goal.get("suggestions", use: suggestions)
+                goal.get("adjustment-drafts", use: adjustmentDrafts)
+            }
+        }
+        write.group("financial-goals") { goals in
+            goals.post(use: create)
+            goals.patch("bulk", use: bulkUpdate)
+            goals.group(":id") { goal in
                 goal.put(use: update)
                 goal.delete(use: delete)
-                goal.get("progress", use: progress)
                 goal.post("what-if", use: whatIf)
-                goal.get("contributions", use: listContributions)
                 goal.post("contributions", use: createContribution)
                 goal.delete("contributions", ":contributionId", use: deleteContribution)
-                goal.get("suggestions", use: suggestions)
                 goal.post("suggestions", ":suggestionId", "accept", use: acceptSuggestion)
                 goal.post("suggestions", ":suggestionId", "dismiss", use: dismissSuggestion)
-                goal.get("adjustment-drafts", use: adjustmentDrafts)
             }
         }
     }

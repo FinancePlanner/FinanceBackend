@@ -21,19 +21,22 @@ struct FinancingController: RouteCollection {
     private let maxImportBytes = 8 * 1024 * 1024
 
     func boot(routes: any RoutesBuilder) throws {
-        let protected = routes.grouped(SessionToken.authenticator(), SessionToken.guardMiddleware())
-        let financing = protected.grouped("financing")
-        financing.post("simulations", use: simulate)
-        financing.get("assumptions", use: getAssumptions)
-        financing.put("assumptions", use: putAssumptions)
-        financing.get("projections", use: projections)
-        financing.get("match-candidates", ":expenseId", use: matchCandidates)
-        financing.get("plans", use: plans)
-        financing.post("plans", use: createPlan)
-        financing.post("imports", "url", use: importURL)
-        financing.on(.POST, "imports", "file", body: .collect(maxSize: "8mb"), use: importFile)
-        financing.group("plans", ":planId") { plan in
-            plan.get("schedule", use: schedule)
+        let protected = routes.grouped(ScopedBearerAuthenticator(), SessionToken.guardMiddleware())
+        let read = protected.grouped(ScopeRequirementMiddleware(.planningRead)).grouped("financing")
+        let write = protected.grouped(ScopeRequirementMiddleware(.planningWrite)).grouped("financing")
+
+        read.get("assumptions", use: getAssumptions)
+        read.get("projections", use: projections)
+        read.get("match-candidates", ":expenseId", use: matchCandidates)
+        read.get("plans", use: plans)
+        read.get("plans", ":planId", "schedule", use: schedule)
+
+        write.post("simulations", use: simulate)
+        write.put("assumptions", use: putAssumptions)
+        write.post("plans", use: createPlan)
+        write.post("imports", "url", use: importURL)
+        write.on(.POST, "imports", "file", body: .collect(maxSize: "8mb"), use: importFile)
+        write.group("plans", ":planId") { plan in
             plan.patch(use: updateStatus)
             plan.post("revisions", use: revise)
             plan.post("installments", ":installment", "match", use: match)
