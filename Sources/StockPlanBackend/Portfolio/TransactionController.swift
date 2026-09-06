@@ -42,7 +42,7 @@ struct TransactionController: RouteCollection {
         let session = try req.auth.require(SessionToken.self)
         let payload = try req.content.decode(UpdateTransactionRequest.self)
         return try await TransactionService(req: req).update(
-            id: try requireTransactionId(req),
+            id: requireTransactionId(req),
             payload: payload,
             userId: session.userId,
             on: req.db
@@ -53,7 +53,7 @@ struct TransactionController: RouteCollection {
     func delete(req: Request) async throws -> HTTPStatus {
         let session = try req.auth.require(SessionToken.self)
         try await TransactionService(req: req).delete(
-            id: try requireTransactionId(req),
+            id: requireTransactionId(req),
             userId: session.userId,
             on: req.db
         )

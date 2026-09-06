@@ -8,6 +8,12 @@ import VaporTesting
 
 @Suite("MCP Personal Access Token Auth Tests", .serialized)
 struct MCPTokenAuthTests {
+    // Decoding `[T].self` inline trips a type-checker failure in these expressions,
+    // while `Array<T>.self` trips swiftformat's typeSugar rule. Named aliases keep
+    // both happy.
+    private typealias TransactionList = [TransactionResponse]
+    private typealias WatchlistItemList = [WatchlistItemResponse]
+
     // MARK: - Harness
 
     private func withApp(_ test: @escaping (Application) async throws -> Void) async throws {
@@ -337,7 +343,7 @@ struct MCPTokenAuthTests {
                 req.headers.bearerAuthorization = .init(token: pat)
             }, afterResponse: { res async throws in
                 #expect(res.status == .ok)
-                let items = try res.content.decode(Array<WatchlistItemResponse>.self)
+                let items = try res.content.decode(WatchlistItemList.self)
                 let avgo = items.first { $0.symbol == "AVGO" }
                 #expect(avgo != nil)
                 #expect(avgo?.status == .waiting)
@@ -389,7 +395,7 @@ struct MCPTokenAuthTests {
                 req.headers.bearerAuthorization = .init(token: pat)
             }, afterResponse: { res async throws in
                 #expect(res.status == .ok)
-                let rows = try res.content.decode(Array<TransactionResponse>.self)
+                let rows = try res.content.decode(TransactionList.self)
                 let symbols = rows.map(\.instrumentId)
                 let types = rows.map(\.type)
                 #expect(symbols.contains("AVGO"))
@@ -476,5 +482,4 @@ struct MCPTokenAuthTests {
             }
         }
     }
-
 }
