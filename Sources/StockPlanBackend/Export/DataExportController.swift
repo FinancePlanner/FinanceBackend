@@ -4,14 +4,17 @@ struct DataExportController: RouteCollection {
     let exportService: any DataExportService
 
     func boot(routes: any RoutesBuilder) throws {
-        let protected = routes.grouped(SessionToken.authenticator(), SessionToken.guardMiddleware())
+        let protected = routes.grouped(ScopedBearerAuthenticator(), SessionToken.guardMiddleware())
         let rateLimit = RateLimitMiddleware(limit: 60, interval: 60)
         let rateLimitedProtected = protected.grouped(rateLimit)
 
-        let exports = rateLimitedProtected.grouped("api", "v3", "export")
-        exports.post(use: createExport)
-        exports.get(use: listExports)
-        exports.get(":id", use: getExport)
+        rateLimitedProtected.grouped(ScopeRequirementMiddleware(.exportWrite))
+            .post("api", "v3", "export", use: createExport)
+        rateLimitedProtected.grouped(ScopeRequirementMiddleware(.exportRead))
+            .group("api", "v3", "export") { exports in
+                exports.get(use: listExports)
+                exports.get(":id", use: getExport)
+            }
     }
 
     @Sendable

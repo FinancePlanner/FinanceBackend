@@ -7,10 +7,13 @@ struct RetirementController: RouteCollection {
     let registry = RetirementRuleRegistry()
 
     func boot(routes: any RoutesBuilder) throws {
-        let protected = routes.grouped(SessionToken.authenticator(), SessionToken.guardMiddleware())
-        protected.get("retirement", "rules", ":jurisdiction", use: rules)
-        protected.group("portfolios", ":portfolioId", "retirement") { retirement in
-            retirement.get(use: getPlan)
+        let protected = routes.grouped(ScopedBearerAuthenticator(), SessionToken.guardMiddleware())
+        let read = protected.grouped(ScopeRequirementMiddleware(.planningRead))
+        let write = protected.grouped(ScopeRequirementMiddleware(.planningWrite))
+
+        read.get("retirement", "rules", ":jurisdiction", use: rules)
+        read.get("portfolios", ":portfolioId", "retirement", use: getPlan)
+        write.group("portfolios", ":portfolioId", "retirement") { retirement in
             retirement.put(use: upsertPlan)
             retirement.post("refresh-rules", use: refreshRules)
             retirement.post("projection", use: projection)

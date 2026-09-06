@@ -18,8 +18,11 @@ struct IdempotencyMiddleware: AsyncMiddleware {
         self.keyPrefix = keyPrefix
     }
 
-    private func cacheKey(for key: String) -> RedisKey {
-        RedisKey("\(keyPrefix):\(key)")
+    /// Namespaced per caller. `Idempotency-Key` is a client-chosen opaque string,
+    /// so without a caller component every credential shares one keyspace and a
+    /// colliding key replays one caller's cached response body to another.
+    private func cacheKey(for key: String, callerDigest: String) -> RedisKey {
+        RedisKey("\(keyPrefix):\(callerDigest):\(key)")
     }
 
     func respond(to request: Request, chainingTo next: any AsyncResponder) async throws -> Response {
@@ -34,6 +37,17 @@ struct IdempotencyMiddleware: AsyncMiddleware {
 
         let idemKey = rawKey.trimmingCharacters(in: .whitespacesAndNewlines)
 
+        // This middleware is registered globally, ahead of authentication, so the
+        // credential is the only identity available here. Unauthenticated callers
+        // deliberately get no bucket at all rather than a shared one: replaying a
+        // cached `/v1/auth/*` response would hand one caller another's session.
+        guard let authorization = request.headers.first(name: .authorization),
+              !authorization.isEmpty
+        else {
+            return try await next.respond(to: request)
+        }
+        let callerDigest = String(OpaqueToken.sha256Hex(authorization).prefix(32))
+
         // Redis required — fail closed in prod if missing.
         guard request.application.redis.configuration != nil else {
             if request.application.environment == .production {
@@ -42,7 +56,7 @@ struct IdempotencyMiddleware: AsyncMiddleware {
             return try await next.respond(to: request)
         }
 
-        let key = cacheKey(for: idemKey)
+        let key = cacheKey(for: idemKey, callerDigest: callerDigest)
 
         // Try cache hit.
         if let cachedString = try? await request.redis.get(key, as: String.self).get(),

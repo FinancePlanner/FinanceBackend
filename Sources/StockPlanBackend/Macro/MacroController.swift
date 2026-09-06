@@ -6,8 +6,10 @@ import Vapor
 /// Rate limiting is applied once by the `/v1/macro` group in routes.swift.
 struct MacroController: RouteCollection {
     func boot(routes: any RoutesBuilder) throws {
-        let protected = routes.grouped(SessionToken.authenticator(), SessionToken.guardMiddleware())
-        let macro = protected.grouped("macro")
+        let macro = routes
+            .grouped(ScopedBearerAuthenticator(), SessionToken.guardMiddleware())
+            .grouped(ScopeRequirementMiddleware(.marketRead))
+            .grouped("macro")
 
         macro.get("inflation", "current", use: getCurrentInflation)
         macro.get("inflation", "components", use: getComponents)

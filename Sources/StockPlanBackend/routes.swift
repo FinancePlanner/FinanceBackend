@@ -83,6 +83,7 @@ func routes(_ app: Application) throws {
     let macroRateLimit = RateLimitMiddleware(limit: 80, interval: 60, keyPrefix: "ratelimit:macro")
     try api.grouped(macroRateLimit).register(collection: MacroController())
     try api.register(collection: PortfolioController())
+    try api.register(collection: TransactionController())
     try api.register(collection: PortfolioManagementController())
     try api.register(collection: RebalancingController())
     try api.register(collection: RetirementController())

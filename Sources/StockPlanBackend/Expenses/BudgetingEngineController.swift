@@ -7,8 +7,8 @@ struct BudgetingEngineController: RouteCollection {
     func boot(routes: any RoutesBuilder) throws {
         let protected = routes.grouped(ScopedBearerAuthenticator(), SessionToken.guardMiddleware())
         let budget = protected.grouped("budget")
-        let read = budget.grouped(ScopeRequirementMiddleware(.expensesRead))
-        let write = budget.grouped(ScopeRequirementMiddleware(.expensesWrite))
+        let read = budget.grouped(ScopeRequirementMiddleware(.budgetRead))
+        let write = budget.grouped(ScopeRequirementMiddleware(.budgetWrite))
         read.get("snapshots", ":snapshotId", "drift", use: drift)
         read.get("dca-capacity", use: dcaCapacity)
         write.put("dca-capacity", use: updateDcaCapacity)

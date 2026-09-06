@@ -172,8 +172,8 @@ struct BudgetController: RouteCollection {
     func boot(routes: any RoutesBuilder) throws {
         let protected = routes.grouped(ScopedBearerAuthenticator(), SessionToken.guardMiddleware())
         let budget = protected.grouped("budget")
-        let readable = budget.grouped(ScopeRequirementMiddleware(.expensesRead))
-        let writable = budget.grouped(ScopeRequirementMiddleware(.expensesWrite))
+        let readable = budget.grouped(ScopeRequirementMiddleware(.budgetRead))
+        let writable = budget.grouped(ScopeRequirementMiddleware(.budgetWrite))
 
         readable.get("snapshots", use: getSnapshots)
         writable.post("snapshots", use: createSnapshot)

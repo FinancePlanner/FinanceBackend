@@ -3,7 +3,9 @@ import Vapor
 
 struct DashboardController: RouteCollection {
     func boot(routes: any RoutesBuilder) throws {
-        let protected = routes.grouped(SessionToken.authenticator(), SessionToken.guardMiddleware())
+        let protected = routes
+            .grouped(ScopedBearerAuthenticator(), SessionToken.guardMiddleware())
+            .grouped(ScopeRequirementMiddleware(.portfolioRead))
         protected.get("dashboard", use: dashboard)
         protected.get("dashboard", "insights", use: insights)
         protected.get("dashboard", "why-moved", use: whyMoved)

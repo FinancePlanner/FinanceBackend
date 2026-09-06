@@ -5,49 +5,67 @@ import Vapor
 
 struct WealthAutomationController: RouteCollection {
     func boot(routes: any RoutesBuilder) throws {
-        let protected = routes.grouped(SessionToken.authenticator(), SessionToken.guardMiddleware())
+        let protected = routes.grouped(ScopedBearerAuthenticator(), SessionToken.guardMiddleware())
+        let planningRead = protected.grouped(ScopeRequirementMiddleware(.planningRead))
+        let planningWrite = protected.grouped(ScopeRequirementMiddleware(.planningWrite))
 
-        protected.group("net-worth-forecasts") { forecasts in
+        planningRead.group("net-worth-forecasts") { forecasts in
             forecasts.get(use: listForecasts)
-            forecasts.post(use: createForecast)
             forecasts.get("defaults", use: forecastDefaults)
             forecasts.group(":forecastID") { forecast in
                 forecast.get(use: getForecast)
-                forecast.put(use: updateForecast)
-                forecast.delete(use: deleteForecast)
-                forecast.post("runs", use: runForecast)
                 forecast.get("runs", "latest", use: latestForecastRun)
             }
         }
-
-        protected.group("watchlist", "screens") { screens in
-            screens.get("catalog", use: screenCatalog)
-            screens.get(use: listScreens)
-            screens.post(use: createScreen)
-            screens.group(":screenID") { screen in
-                screen.get(use: getScreen)
-                screen.put(use: updateScreen)
-                screen.delete(use: deleteScreen)
-                screen.post("evaluate", use: evaluateScreen)
-                screen.get("history", use: screenHistory)
+        planningWrite.group("net-worth-forecasts") { forecasts in
+            forecasts.post(use: createForecast)
+            forecasts.group(":forecastID") { forecast in
+                forecast.put(use: updateForecast)
+                forecast.delete(use: deleteForecast)
+                forecast.post("runs", use: runForecast)
             }
         }
 
-        protected.group("portfolio", "lists", ":portfolioListId", "rebalancing-policy") { policy in
+        // Smart screens read and write watchlists, so they are gated on the
+        // watchlist domain rather than planning.
+        let screensRead = protected.grouped(ScopeRequirementMiddleware(.watchlistRead))
+        let screensWrite = protected.grouped(ScopeRequirementMiddleware(.watchlistWrite))
+        screensRead.group("watchlist", "screens") { screens in
+            screens.get("catalog", use: screenCatalog)
+            screens.get(use: listScreens)
+            screens.group(":screenID") { screen in
+                screen.get(use: getScreen)
+                screen.get("history", use: screenHistory)
+            }
+        }
+        screensWrite.group("watchlist", "screens") { screens in
+            screens.post(use: createScreen)
+            screens.group(":screenID") { screen in
+                screen.put(use: updateScreen)
+                screen.delete(use: deleteScreen)
+                screen.post("evaluate", use: evaluateScreen)
+            }
+        }
+
+        planningRead.group("portfolio", "lists", ":portfolioListId", "rebalancing-policy") { policy in
             policy.get(use: getRebalancingPolicy)
+            policy.get("events", use: rebalanceEvents)
+        }
+        planningWrite.group("portfolio", "lists", ":portfolioListId", "rebalancing-policy") { policy in
             policy.put(use: upsertRebalancingPolicy)
             policy.delete(use: deleteRebalancingPolicy)
             policy.post("preview", use: previewRebalancingPolicy)
-            policy.get("events", use: rebalanceEvents)
             policy.post("events", ":eventID", "confirm", use: confirmRebalanceEvent)
             policy.post("events", ":eventID", "dismiss", use: dismissRebalanceEvent)
         }
 
-        protected.group("notifications", "inbox") { inbox in
-            inbox.get(use: notificationInbox)
-            inbox.post("read-all", use: readAllNotifications)
-            inbox.put(":eventID", "read", use: updateNotificationReadState)
-        }
+        protected.grouped(ScopeRequirementMiddleware(.notificationsRead))
+            .get("notifications", "inbox", use: notificationInbox)
+        protected.grouped(ScopeRequirementMiddleware(.notificationsWrite))
+            .group("notifications", "inbox") { inbox in
+                inbox.post("read-all", use: readAllNotifications)
+                inbox.put(":eventID", "read", use: updateNotificationReadState)
+            }
     }
 
     // MARK: Forecasts

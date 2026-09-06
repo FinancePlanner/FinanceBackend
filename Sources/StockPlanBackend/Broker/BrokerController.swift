@@ -6,17 +6,25 @@ import Vapor
 struct BrokerController: RouteCollection {
     func boot(routes: any RoutesBuilder) throws {
         let brokers = routes.grouped("brokers")
-        let protected = brokers.grouped(SessionToken.authenticator(), SessionToken.guardMiddleware())
-        protected.get(use: listBrokers)
-        protected.get("holdings", use: listHoldings)
-        protected.get(":provider", use: getBroker)
-        protected.post("import", "csv", use: importCsvPreview)
-        protected.post("import", "csv", "commit", use: importCsvCommit)
-        protected.post("ibkr", "connect", "start", use: startIBKRConnect)
-        protected.post("ibkr", "connect", "credentials", use: connectIBKRCredentials)
-        protected.post("ibkr", "sync", use: syncIbkr)
-        protected.get("ibkr", "sync", "status", use: getIbkrSyncStatus)
-        protected.delete("ibkr", "connection", use: disconnectIbkr)
+        let protected = brokers.grouped(ScopedBearerAuthenticator(), SessionToken.guardMiddleware())
+        let read = protected.grouped(ScopeRequirementMiddleware(.integrationsRead))
+        let write = protected.grouped(ScopeRequirementMiddleware(.integrationsWrite))
+
+        read.get(use: listBrokers)
+        // Holdings are portfolio data that happens to be served from the broker
+        // prefix, so they follow the holdings domain, not integrations.
+        protected.grouped(ScopeRequirementMiddleware(.holdingsRead)).get("holdings", use: listHoldings)
+        read.get(":provider", use: getBroker)
+        protected.grouped(ScopeRequirementMiddleware(.holdingsWrite))
+            .group("import", "csv") { csv in
+                csv.post(use: importCsvPreview)
+                csv.post("commit", use: importCsvCommit)
+            }
+        write.post("ibkr", "connect", "start", use: startIBKRConnect)
+        write.post("ibkr", "connect", "credentials", use: connectIBKRCredentials)
+        write.post("ibkr", "sync", use: syncIbkr)
+        read.get("ibkr", "sync", "status", use: getIbkrSyncStatus)
+        write.delete("ibkr", "connection", use: disconnectIbkr)
     }
 
     @Sendable

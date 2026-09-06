@@ -7,8 +7,8 @@ struct GoalsController: RouteCollection {
     func boot(routes: any RoutesBuilder) throws {
         let protected = routes.grouped(ScopedBearerAuthenticator(), SessionToken.guardMiddleware())
         let goals = protected.grouped("goals")
-        let readable = goals.grouped(ScopeRequirementMiddleware(.expensesRead))
-        let writable = goals.grouped(ScopeRequirementMiddleware(.expensesWrite))
+        let readable = goals.grouped(ScopeRequirementMiddleware(.goalsRead))
+        let writable = goals.grouped(ScopeRequirementMiddleware(.goalsWrite))
 
         readable.get(use: index)
         writable.post(use: create)

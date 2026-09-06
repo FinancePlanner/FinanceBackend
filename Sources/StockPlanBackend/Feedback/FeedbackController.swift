@@ -4,9 +4,10 @@ import Vapor
 
 struct FeedbackController: RouteCollection {
     func boot(routes: any RoutesBuilder) throws {
-        let protected = routes.grouped(SessionToken.authenticator(), SessionToken.guardMiddleware())
-        let feedbacks = protected.grouped("feedback")
-        feedbacks.post(use: submitFeedback)
+        routes
+            .grouped(ScopedBearerAuthenticator(), SessionToken.guardMiddleware())
+            .grouped(ScopeRequirementMiddleware(.settingsWrite))
+            .post("feedback", use: submitFeedback)
     }
 
     @Sendable

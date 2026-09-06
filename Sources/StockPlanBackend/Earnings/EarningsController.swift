@@ -2,11 +2,11 @@ import Vapor
 
 struct EarningsController: RouteCollection {
     func boot(routes: any RoutesBuilder) throws {
-        let protected = routes.grouped(SessionToken.authenticator(), SessionToken.guardMiddleware())
-
         // This makes it /v1/earnings (when registered in api group)
-        let earnings = protected.grouped("earnings")
-        earnings.get(use: getCalendar)
+        routes
+            .grouped(ScopedBearerAuthenticator(), SessionToken.guardMiddleware())
+            .grouped(ScopeRequirementMiddleware(.marketRead))
+            .get("earnings", use: getCalendar)
     }
 
     @Sendable

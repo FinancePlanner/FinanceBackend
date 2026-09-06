@@ -69,26 +69,43 @@ private struct RiskProfileInput: Content {
 
 struct ScenarioController: RouteCollection {
     func boot(routes: any RoutesBuilder) throws {
-        let protected = routes.grouped(SessionToken.authenticator(), SessionToken.guardMiddleware())
-        protected.group("scenarios") { scenarios in
+        let protected = routes.grouped(ScopedBearerAuthenticator(), SessionToken.guardMiddleware())
+        let read = protected.grouped(ScopeRequirementMiddleware(.planningRead))
+        let write = protected.grouped(ScopeRequirementMiddleware(.planningWrite))
+
+        read.group("scenarios") { scenarios in
             scenarios.get("catalog", use: catalog)
-            scenarios.get(use: listScenarios); scenarios.post(use: createScenario)
+            scenarios.get(use: listScenarios)
+            scenarios.get(":id", use: getScenario)
+        }
+        write.group("scenarios") { scenarios in
+            scenarios.post(use: createScenario)
             scenarios.group(":id") { scenario in
-                scenario.get(use: getScenario); scenario.put(use: updateScenario); scenario.delete(use: deleteScenario)
+                scenario.put(use: updateScenario)
+                scenario.delete(use: deleteScenario)
                 scenario.post("runs", use: createRun)
             }
         }
-        protected.group("portfolio", "scenario-snapshots") { snapshots in
-            snapshots.get(use: listSnapshots); snapshots.post(use: createSnapshot)
+
+        read.group("portfolio", "scenario-snapshots") { snapshots in
+            snapshots.get(use: listSnapshots)
             snapshots.get(":id", use: getSnapshot)
         }
-        protected.group("scenario-runs") { runs in
-            runs.get(use: listRuns); runs.post("compare", use: compareRuns)
-            runs.get(":id", use: getRun); runs.delete(":id", use: cancelRun)
+        write.post("portfolio", "scenario-snapshots", use: createSnapshot)
+
+        read.group("scenario-runs") { runs in
+            runs.get(use: listRuns)
+            runs.get(":id", use: getRun)
             runs.get(":id", "result", use: getResult)
         }
-        protected.group("holding-risk-profiles") { profiles in
-            profiles.get(use: listRiskProfiles); profiles.post(use: saveRiskProfile)
+        write.group("scenario-runs") { runs in
+            runs.post("compare", use: compareRuns)
+            runs.delete(":id", use: cancelRun)
+        }
+
+        read.get("holding-risk-profiles", use: listRiskProfiles)
+        write.group("holding-risk-profiles") { profiles in
+            profiles.post(use: saveRiskProfile)
             profiles.delete(":id", use: deleteRiskProfile)
         }
     }

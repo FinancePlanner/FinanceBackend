@@ -8,6 +8,12 @@ import VaporTesting
 
 @Suite("MCP Personal Access Token Auth Tests", .serialized)
 struct MCPTokenAuthTests {
+    // Decoding `[T].self` inline trips a type-checker failure in these expressions,
+    // while `Array<T>.self` trips swiftformat's typeSugar rule. Named aliases keep
+    // both happy.
+    private typealias TransactionList = [TransactionResponse]
+    private typealias WatchlistItemList = [WatchlistItemResponse]
+
     // MARK: - Harness
 
     private func withApp(_ test: @escaping (Application) async throws -> Void) async throws {
@@ -119,8 +125,8 @@ struct MCPTokenAuthTests {
         }
     }
 
-    @Test("PAT can never write news items, whatever its scopes")
-    func patCannotCreateNews() async throws {
+    @Test("PAT without research:write cannot write news items")
+    func patCannotCreateNewsWithoutScope() async throws {
         try await withApp { app in
             let user = try await registerUser(app: app)
             let pat = try await mintPAT(app: app, userId: user.userId, scopes: [.marketRead, .expensesWrite])
@@ -129,7 +135,7 @@ struct MCPTokenAuthTests {
                 struct NewsWrite: Content { let symbol: String; let headline: String }
                 try req.content.encode(NewsWrite(symbol: "AAPL", headline: "x"))
             }, afterResponse: { res async in
-                #expect(res.status == .unauthorized)
+                #expect(res.status == .forbidden)
             })
         }
     }
@@ -258,17 +264,17 @@ struct MCPTokenAuthTests {
         }
     }
 
-    @Test("PAT cannot reach the rest of the portfolio controller")
-    func patCannotReachOtherPortfolioRoutes() async throws {
+    @Test("PAT without the portfolio domain scopes is forbidden, not unauthorized")
+    func patWithoutPortfolioScopeForbidden() async throws {
         try await withApp { app in
             let user = try await registerUser(app: app)
+            // market:read alone carries none of the portfolio/transactions domains.
             let pat = try await mintPAT(app: app, userId: user.userId, scopes: [.marketRead])
-            // These stay on SessionToken.authenticator(), which rejects opaque tokens.
-            for path in ["v1/portfolio/lists", "v1/portfolio/performance", "v1/pnl"] {
+            for path in ["v1/portfolio/lists", "v1/portfolio/performance", "v1/pnl", "v1/transactions"] {
                 try await app.testing().test(.GET, path, beforeRequest: { req in
                     req.headers.bearerAuthorization = .init(token: pat)
                 }, afterResponse: { res async in
-                    #expect(res.status == .unauthorized)
+                    #expect(res.status == .forbidden)
                 })
             }
         }
@@ -310,6 +316,169 @@ struct MCPTokenAuthTests {
             for row in stored {
                 #expect(row.tokenHash != raw)
                 #expect(row.tokenHash == OpaqueToken.sha256Hex(raw))
+            }
+        }
+    }
+
+    // MARK: - Per-domain scopes
+
+    @Test("PAT with watchlist scopes can round-trip a watchlist row with status and note")
+    func patWatchlistRoundTrip() async throws {
+        try await withApp { app in
+            let user = try await registerUser(app: app)
+            let pat = try await mintPAT(
+                app: app, userId: user.userId, scopes: [.watchlistRead, .watchlistWrite]
+            )
+            try await app.testing().test(.POST, "v1/watchlist", beforeRequest: { req in
+                req.headers.bearerAuthorization = .init(token: pat)
+                try req.content.encode(WatchlistItemRequest(
+                    symbol: "AVGO", note: "Buy at $345-$355", status: .waiting
+                ))
+            }, afterResponse: { res async in
+                #expect(res.status == .created || res.status == .ok)
+            })
+
+            // Verify by content, not by the write reporting success.
+            try await app.testing().test(.GET, "v1/watchlist", beforeRequest: { req in
+                req.headers.bearerAuthorization = .init(token: pat)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let items = try res.content.decode(WatchlistItemList.self)
+                let avgo = items.first { $0.symbol == "AVGO" }
+                #expect(avgo != nil)
+                #expect(avgo?.status == .waiting)
+                #expect(avgo?.note == "Buy at $345-$355")
+            })
+        }
+    }
+
+    @Test("PAT with only watchlist:read cannot write a watchlist row")
+    func patWatchlistReadCannotWrite() async throws {
+        try await withApp { app in
+            let user = try await registerUser(app: app)
+            let pat = try await mintPAT(app: app, userId: user.userId, scopes: [.watchlistRead])
+            try await app.testing().test(.POST, "v1/watchlist", beforeRequest: { req in
+                req.headers.bearerAuthorization = .init(token: pat)
+                try req.content.encode(WatchlistItemRequest(symbol: "TSM", note: nil, status: .waiting))
+            }, afterResponse: { res async in
+                #expect(res.status == .forbidden)
+            })
+        }
+    }
+
+    @Test("PAT with transactions:write can record a trade and read it back")
+    func patRecordsTransaction() async throws {
+        try await withApp { app in
+            let user = try await registerUser(app: app)
+            let pat = try await mintPAT(
+                app: app, userId: user.userId, scopes: [.transactionsRead, .transactionsWrite]
+            )
+            let body = CreateTransactionRequest(
+                symbol: "AVGO",
+                type: "buy",
+                quantity: 10,
+                price: 350,
+                currency: "USD",
+                tradeDate: "2026-09-01",
+                settleDate: nil,
+                fees: 1.5,
+                portfolioListId: nil
+            )
+            try await app.testing().test(.POST, "v1/transactions", beforeRequest: { req in
+                req.headers.bearerAuthorization = .init(token: pat)
+                try req.content.encode(body)
+            }, afterResponse: { res async in
+                #expect(res.status == .created)
+            })
+
+            try await app.testing().test(.GET, "v1/transactions", beforeRequest: { req in
+                req.headers.bearerAuthorization = .init(token: pat)
+            }, afterResponse: { res async throws in
+                #expect(res.status == .ok)
+                let rows = try res.content.decode(TransactionList.self)
+                let symbols = rows.map(\.instrumentId)
+                let types = rows.map(\.type)
+                #expect(symbols.contains("AVGO"))
+                #expect(types.contains("buy"))
+            })
+        }
+    }
+
+    @Test("Goals and budget no longer answer to expenses:write after the per-domain split")
+    func migratedScopesNoLongerAcceptExpensesWrite() async throws {
+        try await withApp { app in
+            let user = try await registerUser(app: app)
+            let pat = try await mintPAT(
+                app: app, userId: user.userId, scopes: [.expensesRead, .expensesWrite]
+            )
+            for path in ["v1/goals", "v1/budget/snapshots"] {
+                try await app.testing().test(.GET, path, beforeRequest: { req in
+                    req.headers.bearerAuthorization = .init(token: pat)
+                }, afterResponse: { res async in
+                    #expect(res.status == .forbidden)
+                })
+            }
+        }
+    }
+
+    @Test("Goals answer to goals:read once the token carries it")
+    func goalsScopeWorks() async throws {
+        try await withApp { app in
+            let user = try await registerUser(app: app)
+            let pat = try await mintPAT(app: app, userId: user.userId, scopes: [.goalsRead])
+            try await app.testing().test(.GET, "v1/goals", beforeRequest: { req in
+                req.headers.bearerAuthorization = .init(token: pat)
+            }, afterResponse: { res async in
+                #expect(res.status == .ok)
+            })
+        }
+    }
+
+    // MARK: - The three endpoints no scope may reach
+
+    @Test("No scope reaches account deletion, token minting, or OAuth consent")
+    func humanOnlyEndpointsStayUnreachable() async throws {
+        try await withApp { app in
+            let user = try await registerUser(app: app)
+            // Every grantable scope at once — the carve-outs must still hold.
+            let pat = try await mintPAT(app: app, userId: user.userId, scopes: APIScope.grantable)
+
+            try await app.testing().test(.DELETE, "v1/users", beforeRequest: { req in
+                req.headers.bearerAuthorization = .init(token: pat)
+            }, afterResponse: { res async in
+                #expect(res.status == .unauthorized || res.status == .forbidden)
+            })
+
+            try await app.testing().test(.POST, "v1/tokens", beforeRequest: { req in
+                req.headers.bearerAuthorization = .init(token: pat)
+                struct Mint: Content { let name: String; let scopes: [String] }
+                try req.content.encode(Mint(name: "escalated", scopes: ["expenses:write"]))
+            }, afterResponse: { res async in
+                #expect(res.status == .unauthorized || res.status == .forbidden)
+            })
+
+            try await app.testing().test(
+                .POST, "v1/oauth/flows/\(UUID().uuidString)/approve",
+                beforeRequest: { req in
+                    req.headers.bearerAuthorization = .init(token: pat)
+                }, afterResponse: { res async in
+                    #expect(res.status == .unauthorized || res.status == .forbidden)
+                }
+            )
+        }
+    }
+
+    @Test("Credential mutations stay out of reach of every scope")
+    func credentialMutationsStayFirstParty() async throws {
+        try await withApp { app in
+            let user = try await registerUser(app: app)
+            let pat = try await mintPAT(app: app, userId: user.userId, scopes: APIScope.grantable)
+            for path in ["v1/users/email", "v1/users/password", "v1/users/username"] {
+                try await app.testing().test(.PATCH, path, beforeRequest: { req in
+                    req.headers.bearerAuthorization = .init(token: pat)
+                }, afterResponse: { res async in
+                    #expect(res.status == .unauthorized || res.status == .forbidden)
+                })
             }
         }
     }

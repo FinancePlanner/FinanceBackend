@@ -4,25 +4,27 @@ import Vapor
 
 struct CryptoController: RouteCollection {
     func boot(routes: any RoutesBuilder) throws {
-        let protected = routes.grouped(SessionToken.authenticator(), SessionToken.guardMiddleware())
-        let crypto = protected.grouped("crypto")
+        let protected = routes.grouped(ScopedBearerAuthenticator(), SessionToken.guardMiddleware())
+        let read = protected.grouped(ScopeRequirementMiddleware(.cryptoRead)).grouped("crypto")
+        let write = protected.grouped(ScopeRequirementMiddleware(.cryptoWrite)).grouped("crypto")
 
         // Market data endpoints
-        crypto.get("list", use: cryptocurrencyList)
-        crypto.get("quote", ":symbol", use: quote)
-        crypto.get("quote-short", ":symbol", use: quoteShort)
-        crypto.get("batch-quotes", use: batchQuotes)
-        crypto.get("history", ":resolution", ":symbol", use: history)
-        crypto.get("news", use: generalNews)
-        crypto.get("news", ":symbol", use: news)
+        read.get("list", use: cryptocurrencyList)
+        read.get("quote", ":symbol", use: quote)
+        read.get("quote-short", ":symbol", use: quoteShort)
+        read.get("batch-quotes", use: batchQuotes)
+        read.get("history", ":resolution", ":symbol", use: history)
+        read.get("news", use: generalNews)
+        read.get("news", ":symbol", use: news)
 
         // Portfolio CRUD
-        let portfolio = crypto.grouped("portfolio")
-        portfolio.get(use: listPortfolio)
-        portfolio.post(use: addToPortfolio)
-        portfolio.group(":itemId") { item in
-            item.put(use: updatePortfolioItem)
-            item.delete(use: removeFromPortfolio)
+        read.get("portfolio", use: listPortfolio)
+        write.group("portfolio") { portfolio in
+            portfolio.post(use: addToPortfolio)
+            portfolio.group(":itemId") { item in
+                item.put(use: updatePortfolioItem)
+                item.delete(use: removeFromPortfolio)
+            }
         }
     }
 

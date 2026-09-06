@@ -2,15 +2,15 @@ import Vapor
 
 struct PushNotificationsController: RouteCollection {
     func boot(routes: any RoutesBuilder) throws {
-        let protected = routes.grouped(SessionToken.authenticator(), SessionToken.guardMiddleware())
-        let push = protected.grouped("notifications", "apns")
+        let protected = routes.grouped(ScopedBearerAuthenticator(), SessionToken.guardMiddleware())
+        let read = protected.grouped(ScopeRequirementMiddleware(.notificationsRead))
+        let write = protected.grouped(ScopeRequirementMiddleware(.notificationsWrite))
 
-        push.put("device", use: registerDevice)
-        push.post("device", "deactivate", use: deactivateDevice)
+        write.put("notifications", "apns", "device", use: registerDevice)
+        write.post("notifications", "apns", "device", "deactivate", use: deactivateDevice)
 
-        let earnings = protected.grouped("notifications", "earnings")
-        earnings.get("preferences", use: getEarningsPreferences)
-        earnings.put("preferences", use: updateEarningsPreferences)
+        read.get("notifications", "earnings", "preferences", use: getEarningsPreferences)
+        write.put("notifications", "earnings", "preferences", use: updateEarningsPreferences)
     }
 
     @Sendable

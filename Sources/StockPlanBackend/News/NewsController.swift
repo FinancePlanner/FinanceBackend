@@ -3,34 +3,33 @@ import Vapor
 
 struct NewsController: RouteCollection {
     func boot(routes: any RoutesBuilder) throws {
-        let protected = routes.grouped(SessionToken.authenticator(), SessionToken.guardMiddleware())
+        let protected = routes.grouped(ScopedBearerAuthenticator(), SessionToken.guardMiddleware())
 
-        // The feed is the one news read exposed to third-party tokens (the MCP
-        // `get_news` tool, source=tracked). It takes the scoped authenticator so a
-        // personal access token with market:read is accepted; every other news
-        // route stays first-party JWT only, so a PAT can never create, edit, or
-        // delete items regardless of its scopes.
-        let scopedFeed = routes
-            .grouped(ScopedBearerAuthenticator(), SessionToken.guardMiddleware())
-            .grouped("news")
+        // The feed keeps its own gate: it is reference data rather than the user's
+        // saved library, so market:read is what the MCP `get_news` tool carries.
+        protected.grouped("news")
             .grouped(ScopeRequirementMiddleware(.marketRead))
-        scopedFeed.get("feed", use: feedNews)
+            .get("feed", use: feedNews)
 
-        let news = protected.grouped("news")
-        news.get(use: listNews)
-        news.post(use: createNews)
-        news.post("sync", use: syncNews)
-        news.post("view", use: recordNewsView)
-        news.get("thesis-watch", use: thesisWatchFeed)
-        news.get("thesis-watch", "notifications", use: thesisWatchNotificationPreferences)
-        news.put("thesis-watch", "notifications", use: updateThesisWatchNotificationPreferences)
-        news.group("thesis-watch", ":storyId") { story in
-            story.get(use: thesisWatchStory)
+        // The saved-article library and thesis watch are the user's own research.
+        let read = protected.grouped(ScopeRequirementMiddleware(.researchRead)).grouped("news")
+        let write = protected.grouped(ScopeRequirementMiddleware(.researchWrite)).grouped("news")
+
+        read.get(use: listNews)
+        read.get("thesis-watch", use: thesisWatchFeed)
+        read.get("thesis-watch", "notifications", use: thesisWatchNotificationPreferences)
+        read.get("thesis-watch", ":storyId", use: thesisWatchStory)
+        read.get(":newsId", use: getNews)
+
+        write.post(use: createNews)
+        write.post("sync", use: syncNews)
+        write.post("view", use: recordNewsView)
+        write.put("thesis-watch", "notifications", use: updateThesisWatchNotificationPreferences)
+        write.group("thesis-watch", ":storyId") { story in
             story.post("feedback", use: thesisWatchFeedback)
             story.post("view", use: markThesisWatchStoryRead)
         }
-        news.group(":newsId") { item in
-            item.get(use: getNews)
+        write.group(":newsId") { item in
             item.put(use: updateNews)
             item.delete(use: deleteNews)
         }

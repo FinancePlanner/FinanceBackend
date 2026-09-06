@@ -3,10 +3,10 @@ import Vapor
 
 struct UserActivityController: RouteCollection {
     func boot(routes: any RoutesBuilder) throws {
-        let activities = routes.grouped("activities")
-        let protected = activities.grouped(SessionToken.authenticator(), SessionToken.guardMiddleware())
-
-        protected.get(use: getActivities)
+        routes.grouped("activities")
+            .grouped(ScopedBearerAuthenticator(), SessionToken.guardMiddleware())
+            .grouped(ScopeRequirementMiddleware(.settingsRead))
+            .get(use: getActivities)
     }
 
     @Sendable

@@ -5,9 +5,10 @@ struct ExportFileController: RouteCollection {
     let exportService: any DataExportService
 
     func boot(routes: any RoutesBuilder) throws {
-        let protected = routes.grouped(SessionToken.authenticator(), SessionToken.guardMiddleware())
-        let exports = protected.grouped("api", "v3", "export")
-        exports.get("file", ":userId", ":filename", use: serveExportFile)
+        routes
+            .grouped(ScopedBearerAuthenticator(), SessionToken.guardMiddleware())
+            .grouped(ScopeRequirementMiddleware(.exportRead))
+            .get("api", "v3", "export", "file", ":userId", ":filename", use: serveExportFile)
     }
 
     @Sendable

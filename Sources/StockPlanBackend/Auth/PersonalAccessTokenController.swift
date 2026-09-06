@@ -8,8 +8,13 @@ struct PersonalAccessTokenController: RouteCollection {
     static let maxActiveTokensPerUser = 25
 
     func boot(routes: any RoutesBuilder) throws {
+        // Never scopeable. A credential that can mint credentials can grant itself
+        // every scope, which would reduce APIScope to advisory labelling. This stays
+        // on the first-party session authenticator, with FirstPartyOnlyMiddleware and
+        // the requireFirstPartySession check below as defence in depth.
         let tokens = routes
             .grouped(SessionToken.authenticator(), SessionToken.guardMiddleware())
+            .grouped(FirstPartyOnlyMiddleware())
             .grouped("tokens")
         tokens.post(use: create)
         tokens.get(use: list)
